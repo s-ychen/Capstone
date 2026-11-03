@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parent.parent
 TREASURIES_DIR = ROOT / "data" / "raw" / "treasuries"
 
 logger = logging.getLogger(__name__)
+# NOTE: federal holidays only, not the bond market calendar. Days like Good Friday
+# never get a cache file, so ranges containing one re-query WRDS every call.
 _HOLIDAYS = USFederalHolidayCalendar().holidays("2000-01-01", "2040-12-31")
 
 TREASURIES_QUERY = """
@@ -55,7 +57,6 @@ def pull_treasuries(start: str, end: str, force_refresh: bool = False) -> pd.Dat
     result are the business days. Days already cached are read from disk. WRDS
     is only queried (for the span of the missing days) when a weekday that is
     not a US federal holiday has no cached file, or when force_refresh=True.
-    Good Friday is not a federal holiday, so ranges containing one re-query.
     """
     TREASURIES_DIR.mkdir(parents=True, exist_ok=True)
     days = pd.bdate_range(start, end, freq="C", holidays=_HOLIDAYS)
