@@ -40,6 +40,10 @@ def build_mbs_daily(universe: pd.DataFrame, refresh: bool = False) -> tuple[pd.D
     d["bid_ask_spread_bps"] = d["bid_ask_spread"] / d["clean_price"] * 1e4
     if "pool_factor" not in d:
         d["pool_factor"] = np.nan
+
+
+    # lalala manual part 
+    
     log.info("mbs daily: %d rows, %d pools, %d TBAs, %s to %s", len(d), d.loc[~d["is_tba"], "cusip"].nunique(),
              d.loc[d["is_tba"], "cusip"].nunique(), d["date"].min().date(), d["date"].max().date())
     return d, clean_log

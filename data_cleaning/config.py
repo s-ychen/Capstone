@@ -12,7 +12,7 @@ AGG_HOLDINGS_CSV = DATA_DIR / "AGG_holdings_clean.csv"
 #   TRACE enhanced (corporates) -> 2026-03-17
 #   TRACE SPDS enhanced (MBS)   -> 2025-03-17, TBA table -> 2025-01-29
 #   Dickerson daily corporates  -> 2025-03-31
-START_DATE = "2024-01-01"
+START_DATE = "2022-01-01" # CHANGE HERE!!!! 
 END_DATE = "2026-03-31"
 WINDOW_TAG = f"{START_DATE}_{END_DATE}"   # suffix on data/raw caches, so changing the window re-pulls
 

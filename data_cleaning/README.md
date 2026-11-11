@@ -64,6 +64,16 @@ the NSS parameters and fit diagnostics. Its `date` column is also the trading ca
 
 **`trace_cleaning_log`** - trades remaining after each cleaning step, per product.
 
+**`mbs_monthly`** (from `uv run python -m data_cleaning.mbs_monthly`, built on `mbs_daily`) - a gap-free month-end
+panel for the MBS pools: last trade of the month as the price (`price_source` = `traded_window` if within the final
+5 trading days, else `traded_month`), months with no trade filled by moving the pool's last traded price with the
+median price change of its coupon cohort (`cohort_proxy`: same GNMA/conventional program, term and coupon; flat
+`carried` when no cohort traded). `is_stale` is True unless `traded_window`. Bid-ask spread is the month's observed
+mean, else the pool's last observed, else the cohort median (`bid_ask_source`). The pool factor is only known on
+trade days and is carried forward (`pool_factor_date`), so current face is overstated for pools that stop trading.
+An incomplete final month is dropped. On traded months held out as a test, the cohort proxy has a median error
+of 0.6 price points against 1.3 for a flat carry.
+
 ## Coverage and caveats
 
 - WRDS end dates differ by source (Nov 2026): CRSP Treasuries 2025-12-31, TRACE corporates 2026-03-17, TRACE MBS
