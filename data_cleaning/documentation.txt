@@ -1,0 +1,182 @@
+DATA FILES
+
+0. config.py 
+- wrds username 
+- start/end dates 
+- iShares CSV: desired 5 sectors
+- WRDS: table names, columns
+- other cleaning rules
+
+1. universe.py 
+- downloads today's AGG holdings CSV from the iShares website & save to data/raw (can change to read a static file)
+- parse and clean the CSV, filter for our sectors (covers 77.8%)
+    ishares_sector          model_sector      n          weight_pct              
+    Financial Institutions  financial        2367        4.45
+    Industrial              industrial       5087        5.05
+    MBS Pass-Through        mbs_passthrough  2940       21.44
+    Treasury                treasury          293       46.76
+    Utility                 utility          1466        0.10
+- returns the following data columns:
+    cusip                string[python]
+    name                         object
+    ishares_sector               object
+    asset_class                  object
+    agg_market_value            float64
+    agg_weight_pct              float64
+    agg_par_value               float64
+    agg_maturity_date    datetime64[ns]
+    agg_coupon_pct              float64
+    agg_duration                float64
+    agg_mod_duration            float64
+    agg_ytm_pct                 float64
+    agg_weight_raw              float64
+    cusip8               string[python]
+    model_sector                 object
+
+2. wrds_data.py 
+- queried data stored in .pkl files cached to data/raw; otherwise, query the following:
+- trading calendar (distinct dates in the time range)
+- bondrets (wrdsapps_bondret.bondret)
+- treasuries (crsp.tfz_iss, crsp.tfz_dly) - issues & daily bid/ask quotes
+- mbs (trace_enhanced.mbsmasterfile)
+- trade-level data (trace.trace_enhanced) 
+
+3. curve.py 
+- cleans CRSP treasuries per quote date (merge issues and daily tables on cusip)
+    - mid clean price = (bid + ask) / 2
+    - dirty price = mid clean price + accrued interest
+    - half spread = (ask - bid) / 2 / mid 
+    - returns all treasuries where maturity date > quote date 
+        treasury_id                Float64
+        quote_date          datetime64[ns]
+        bid_price                  Float64
+        ask_price                  Float64
+        accrued_interest           Float64
+        cusip8              string[python]
+        issue_date          datetime64[ns]
+        maturity_date       datetime64[ns]
+        coupon_pct                 Float64
+        mid_clean_price            Float64
+        dirty_price                Float64
+        half_spread_frac           Float64
+- apply duration-weighted NSS least squares to fit zero curve per quote date
+    beta0         float64
+    beta1         float64
+    beta2         float64
+    beta3         float64
+    tau1          float64
+    tau2          float64
+    rmse_price    float64
+    n_used          int64
+    n_quoted        int64
+- read the zero yields at the 8 tenors for each date -> yield curve table 
+    zero_yield_6m_pct     float64
+    zero_yield_1y_pct     float64
+    zero_yield_2y_pct     float64
+    zero_yield_3y_pct     float64
+    zero_yield_5y_pct     float64
+    zero_yield_7y_pct     float64
+    zero_yield_10y_pct    float64
+    zero_yield_30y_pct    float64
+    rmse_price            float64
+    n_used                  int64
+    n_quoted                int64
+
+4. trace.py  
+- cleans the trade-level data from TRACE via the following steps:
+    1. drop cancelled/corrected//reversed trades 
+    2. keep only the sell-side report of inter-dealer trades 
+    3. drop non-standard trades (when-issued, locked-in, special-condition, etc.) 
+    4. median filter (price within 10% of the daily median & 9-day centered median)
+    5. reversal filter (>=10% away from previous, next, and average trade) 
+    6. MBS -> TRACE reports original face, so scale by pool factor 
+    - returns df with cols: cusip, trade_date, trade_time, price, yield_pct, side, contra, qty_face 
+- get daily prices per cusip -> volume-weighted price + yield %, volume, half-spread (if both sides traded)
+
+5. prices.py 
+- for each month, take last observation within the last 5 trading days
+- carry-forward -> for each cusip, get month-end prices from first price to maturity/last month
+    - missing data points are forward-filled + flagged # of missing months 
+- valuation -> add analytic columns (accured interest, dirty px, spread, yield) to the cusip/month price grid 
+- consolidate 3 price sources (bondret, crsp, trace) to get master price table
+
+6. features.py 
+- cleans MBS table to have 1 row per cusip
+- build terms -> collect 3 sources: bondret, crsp treasuries, mbs master + merge onto AGG universe 
+- build features -> final bond features table, drops bonds without maturity/coupon/prices in any month, renormalize weights s.t. 1'b=1
+    - returns features df + dropped df
+- treasury auctions upcoming/announcements pulled from TreasuryDirect API 
+    cusip                        object
+    security_type                object
+    security_term                object
+    announcement_date    datetime64[ns]
+    issue_date           datetime64[ns]
+    maturity_date        datetime64[ns]
+    offering_amount              object
+
+7. pipeline.py 
+- reads the cached pkl files for agg/wrds data 
+- get filtered agg cusips (build_universe)
+- get wrds datasets (bondrets, crsp treasuries, mbs, trace daily trade-level)
+- fit zero curve + 8 key rates 
+- clean up month-end prices and features, merge and normalise
+- save tables to data/processed folder 
+- run sanity checks 
+
+FINAL TABLES 
+
+(1) bond_features 
+    cusip               string[python]
+    name                        object
+    ishares_sector              object
+    asset_class                 object
+    agg_market_value           float64
+    agg_par_value              float64
+    agg_duration               float64
+    agg_mod_duration           float64
+    agg_ytm_pct                float64
+    agg_weight_raw             float64
+    model_sector                object
+    issue_date          datetime64[ns]
+    maturity_date       datetime64[ns]
+    coupon_pct                 Float64
+    coupon_frequency             int64
+    day_count                   object
+    is_amortising                 bool
+    min_denomination           float64
+    terms_source                object
+    agg_weight                 float64
+
+(2) prices 
+    cusip                            string[python]
+    month_end_date                   datetime64[ns]
+    price_date                       datetime64[ns]
+    valuation_date                   datetime64[ns]
+    source                                   object
+    is_stale                                   bool
+    is_stale_prev                              bool
+    usable_for_residual_variance               bool
+    clean_price                             Float64
+    accrued_interest                        float64
+    dirty_price                             Float64
+    spread_bps                              Float64
+    spread_source                            object
+    yield_pct                               Float64
+    yield_source                             object
+    transaction_cost_frac                   Float64
+    cost_source                              object
+    volume                                  Float64
+    accrued_interest_diff_vs_crsp           float64
+
+(3) yield_curve 
+    zero_yield_6m_pct     float64
+    zero_yield_1y_pct     float64
+    zero_yield_2y_pct     float64
+    zero_yield_3y_pct     float64
+    zero_yield_5y_pct     float64
+    zero_yield_7y_pct     float64
+    zero_yield_10y_pct    float64
+    zero_yield_30y_pct    float64
+    rmse_price            float64
+    n_used                  int64
+    n_quoted                int64 

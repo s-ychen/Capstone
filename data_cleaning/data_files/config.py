@@ -1,4 +1,3 @@
-"""All tunable settings for the GoalPath-Bond data pipeline. Items marked VERIFY depend on WRDS names/units I could not check."""
 import re
 from pathlib import Path
 

@@ -67,13 +67,15 @@ def fit_curves(quotes):
         dur = np.bincount(I, T * A) / np.bincount(I, A)                       # cash-flow-weighted time, a duration proxy
         x0, rmse, n_used = _fit_day(T, A, I, P, dur, x0)
         rows.append({"date": pd.Timestamp(d), **dict(zip(NSS_NAMES, x0)), "rmse_price": rmse, "n_used": n_used, "n_quoted": len(P)})
-    return pd.DataFrame(rows).set_index("date")
+    final_df = pd.DataFrame(rows).set_index("date")
+    return final_df
 
 
 def key_rate_table(params):
     """Zero yields (continuously compounded, %) at the 8 key-rate tenors for every fitted date (the Yield Curve table)."""
     z = np.vstack([100 * nss(np.array(list(C.KEY_RATES.values())), p) for p in params[NSS_NAMES].to_numpy()])
-    return pd.DataFrame(z, index=params.index, columns=list(KEY_COLS.values())).join(params[["rmse_price", "n_used", "n_quoted"]])
+    kr_df = pd.DataFrame(z, index=params.index, columns=list(KEY_COLS.values())).join(params[["rmse_price", "n_used", "n_quoted"]])
+    return kr_df
 
 
 def params_asof(params, dates):
