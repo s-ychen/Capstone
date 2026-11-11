@@ -5,6 +5,8 @@ requires-python = ">=3.12"
 dependencies = [
     "numpy",
     "pandas",
+    "pyarrow>=26.0.1",
+    "python-dotenv>=1.2.4",
     "scikit-learn",
     "wrds==3.5.0",
 ]
