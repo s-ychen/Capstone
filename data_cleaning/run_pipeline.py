@@ -1,4 +1,6 @@
-"""Run the whole pipeline:  uv run python -m data_cleaning.run_pipeline [--refresh] [--skip-mbs] [--skip-corporates]
+"""Run the whole pipeline:  uv run python -m data_cleaning.run_pipeline [--download] [--refresh] [--skip-mbs] [--skip-corporates]
+
+--download fetches the latest holdings CSV from iShares into data/raw and uses it instead of data/AGG_holdings_clean.csv.
 
 Outputs (data/processed/*.parquet): bond_universe, prices_daily, treasury_daily, corporate_daily, mbs_daily,
 yield_curve_daily, plus cleaning logs. See README.md in this folder for the table definitions.
@@ -16,15 +18,15 @@ from .features import solve_yield_and_spread
 from .mbs import build_mbs_daily
 from .merge import build_bond_universe, build_prices_daily, save
 from .treasuries import clean_treasuries, pull_treasuries
-from .universe import build_universe
+from .universe import build_universe, download_holdings
 
 log = logging.getLogger("data_cleaning")
 
 
-def run(refresh: bool = False, corporates: bool = True, mbs: bool = True) -> dict[str, pd.DataFrame]:
+def run(refresh: bool = False, corporates: bool = True, mbs: bool = True, download: bool = False) -> dict[str, pd.DataFrame]:
     t0 = time.time()
     log.info("1) AGG universe")
-    universe = build_universe()
+    universe = build_universe(download_holdings() if download else C.AGG_HOLDINGS_CSV)
     tsy_cusips = set(universe.loc[universe["asset_type"] == "treasury", "cusip"])
 
     log.info("2) CRSP Treasuries")
@@ -64,9 +66,10 @@ def run(refresh: bool = False, corporates: bool = True, mbs: bool = True) -> dic
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--download", action="store_true", help="fetch the latest holdings CSV from iShares instead of the committed snapshot")
     ap.add_argument("--refresh", action="store_true", help="re-pull everything from WRDS instead of using data/raw caches")
     ap.add_argument("--skip-corporates", action="store_true")
     ap.add_argument("--skip-mbs", action="store_true")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s", datefmt="%H:%M:%S")
-    run(refresh=a.refresh, corporates=not a.skip_corporates, mbs=not a.skip_mbs)
+    run(refresh=a.refresh, corporates=not a.skip_corporates, mbs=not a.skip_mbs, download=a.download)

@@ -5,7 +5,12 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"              # cached WRDS pulls (gitignored)
 PROCESSED_DIR = DATA_DIR / "processed"  # pipeline outputs (gitignored)
-AGG_HOLDINGS_CSV = DATA_DIR / "AGG_holdings_clean.csv"
+AGG_HOLDINGS_CSV = DATA_DIR / "AGG_holdings_clean.csv"   # committed snapshot; --download fetches the latest into data/raw
+
+# iShares fund page; the holdings CSV link is found by its link text (falls back to any href with "holdings" + "csv")
+AGG_URL = "https://www.ishares.com/us/products/239458/ishares-core-total-us-bond-market-etf"
+AGG_LINK_TEXT = r"detailed holdings and analytics|download latest fund holdings"
+HTTP_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; GoalPathBond data pipeline)"}
 
 # Price history window (inclusive). Each source simply stops where WRDS stops; as of Nov 2026:
 #   CRSP Treasury quotes        -> 2025-12-31   (so the zero curve, and spreads over it, end there)

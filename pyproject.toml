@@ -3,11 +3,13 @@ name = "mie479-capstone"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    "beautifulsoup4>=4.15.0",
     "matplotlib>=3.11.2",
     "numpy",
     "pandas",
     "pyarrow>=26.0.1",
     "python-dotenv>=1.2.4",
+    "requests>=2.34.2",
     "scikit-learn",
     "seaborn>=0.13.2",
     "wrds==3.5.0",

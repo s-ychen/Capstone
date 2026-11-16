@@ -1,6 +1,8 @@
 """Step 1: the ideal bond universe = iShares AGG holdings file, filtered to the sectors the model covers."""
 import logging
+import re
 from pathlib import Path
+from urllib.parse import urljoin
 
 import pandas as pd
 
@@ -15,6 +17,33 @@ COLS = {
     "Maturity": "agg_maturity_date", "Coupon (%)": "agg_coupon_pct", "Accrual Date": "agg_accrual_date",
     "Duration": "agg_duration", "Mod. Duration": "agg_mod_duration", "YTM (%)": "agg_ytm_pct",
 }
+
+
+def download_holdings(dest_dir: Path = C.RAW_DIR) -> Path:
+    """Download the latest AGG holdings CSV from the iShares fund page into dest_dir. Returns the saved path,
+    named by the holdings date in the file (e.g. ishares_AGG_holdings_20261112.csv)."""
+    import requests
+    from bs4 import BeautifulSoup
+    with requests.Session() as s:
+        s.headers.update(C.HTTP_HEADERS)
+        page = s.get(C.AGG_URL, timeout=30)
+        page.raise_for_status()
+        links = BeautifulSoup(page.text, "html.parser").find_all("a", href=True)
+        pattern = re.compile(C.AGG_LINK_TEXT, re.I)
+        href = next((a["href"] for a in links if pattern.search(a.get_text(" ", strip=True))), None) \
+            or next(a["href"] for a in links if "holdings" in a["href"].lower() and "csv" in a["href"].lower())
+        resp = s.get(urljoin(page.url, href), headers={"Referer": page.url}, timeout=60)
+        resp.raise_for_status()
+    if "html" in resp.headers.get("Content-Type", "").lower():
+        raise ValueError("iShares returned HTML instead of the CSV (blocked or page layout changed)")
+    tmp = Path(dest_dir) / "ishares_AGG_holdings_latest.csv"
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_bytes(resp.content)
+    _, asof = read_holdings(tmp)
+    path = tmp.with_name(f"ishares_AGG_holdings_{asof:%Y%m%d}.csv")
+    tmp.replace(path)
+    log.info("downloaded iShares AGG holdings as of %s -> %s", asof.date(), path)
+    return path
 
 
 def read_holdings(path: Path = C.AGG_HOLDINGS_CSV) -> tuple[pd.DataFrame, pd.Timestamp]:

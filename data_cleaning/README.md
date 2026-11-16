@@ -7,6 +7,7 @@ trading date.
 ```sh
 uv run python -m data_cleaning.run_pipeline          # pulls from WRDS once, caches to data/raw, writes data/processed
 uv run python -m data_cleaning.run_pipeline --refresh # ignore the caches and re-pull
+uv run python -m data_cleaning.run_pipeline --download # fetch the latest holdings CSV from iShares (data/raw/ishares_AGG_holdings_<date>.csv) instead of the committed snapshot
 uv run python -m data_cleaning.validate               # sanity checks + comparison against Dickerson's cleaned prices
 ```
 
