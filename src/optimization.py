@@ -8,9 +8,10 @@ class GoalPathBondOptimizer:
     def __init__(self, 
                  H, # number of periods
                  n, # number of assets
-                 omega, # multi-period weights
+                 omega, # weight of each period
                  c, # transaction cost
-                 Q, # covariance matrices for each period
+                 F, # covariance factors for each period
+                 psi, # residual variances
                  b, # benchmark weights
                  R, # return matrices for each period
                  r_b, # benchmark returns
@@ -38,7 +39,8 @@ class GoalPathBondOptimizer:
         # Objective parameters
         self.omega = omega
         self.c = c
-        self.Q = Q
+        self.F = F
+        self.psi = psi
         
         # Benchmark and drift parameters
         self.b = b
@@ -76,7 +78,7 @@ class GoalPathBondOptimizer:
 
     def optimize(self, verbose=True):
         """
-        Formulates and solves the CVXPY problem using GUROBI based on instance properties.
+        Formulates and solves the mixed-integer CVXPY problem using GUROBI.
         """
         # 1. Decision Variables
         x = [cp.Variable(self.n, nonneg=True) for _ in range(self.H)]
@@ -91,7 +93,10 @@ class GoalPathBondOptimizer:
         # 2. Objective Function
         objective_terms = []
         for h in range(self.H):
-            active_risk = self.omega[h] * cp.quad_form(a[h], self.Q[h])
+            active_risk = self.omega[h] * (
+                cp.sum_squares(self.F[h].T @ a[h])
+                + cp.sum(cp.multiply(self.psi, cp.square(a[h])))
+            )
             transaction_costs = self.c.T @ (u_plus[h] + u_minus[h])
             objective_terms.append(active_risk + transaction_costs)
             
@@ -140,6 +145,11 @@ class GoalPathBondOptimizer:
 
         # 4. Formulate and Solve Problem
         self.prob = cp.Problem(objective, constraints)
+        if cp.GUROBI not in cp.installed_solvers():
+            raise RuntimeError(
+                "GUROBI is required to solve this mixed-integer problem. "
+                "Install gurobipy and configure a valid Gurobi license."
+            )
         self.prob.solve(solver=cp.GUROBI, verbose=verbose)
         
         if self.prob.status not in ["optimal", "optimal_inaccurate"]:
@@ -152,6 +162,121 @@ class GoalPathBondOptimizer:
         self.z_val = [z[h].value for h in range(self.H)]
         
         return self.prob.value, self.x_val, self.u_plus_val, self.u_minus_val, self.z_val
+
+    def optimize_sequential(self, verbose=True):
+        """Solve periods in sequence, using each solution as the next period's x_init.
+
+        Returns per-period objective values, weights, buys, sells, and selection flags.
+        The optimizer's x_init is updated to the final period's solution.
+        """
+        initial_weights = np.asarray(self.x_init, dtype=float).copy()
+        if initial_weights.shape != (self.n,):
+            raise ValueError(
+                f"x_init must have shape ({self.n},), got {initial_weights.shape}"
+            )
+
+        objective_values = []
+        x_values = []
+        u_plus_values = []
+        u_minus_values = []
+        z_values = []
+
+        for h in range(self.H):
+            period_optimizer = GoalPathBondOptimizer(
+                H=1,
+                n=self.n,
+                omega=[self.omega[h]],
+                c=self.c,
+                F=[self.F[h]],
+                psi=self.psi,
+                b=[self.b[h]],
+                R=[self.R[h]],
+                r_b=[self.r_b[h]],
+                x_init=initial_weights,
+                D=[self.D[h]],
+                K=[self.K[h]],
+                D_spr=[self.D_spr[h]],
+                C=[self.C[h]],
+                delta_D=self.delta_D,
+                delta_K=self.delta_K,
+                delta_S=self.delta_S,
+                delta_C=self.delta_C,
+                mu=[self.mu[h]],
+                eps2=self.eps2,
+                Theta_half=[self.Theta_half[h]],
+                r_req=[self.r_req[h]],
+                l=[self.l[h]],
+                E=[self.E[h]],
+                k_max=self.k_max,
+            )
+            value, period_x, period_u_plus, period_u_minus, period_z = (
+                period_optimizer.optimize(verbose=verbose)
+            )
+
+            if not period_x or period_x[0] is None:
+                raise RuntimeError(f"Optimizer returned no weights for period {h}.")
+
+            initial_weights = np.asarray(period_x[0], dtype=float).copy()
+            objective_values.append(value)
+            x_values.append(initial_weights)
+            u_plus_values.append(period_u_plus[0])
+            u_minus_values.append(period_u_minus[0])
+            z_values.append(period_z[0])
+
+            self.x_init = initial_weights.copy()
+            self.prob = period_optimizer.prob
+            self.x_val = x_values
+            self.u_plus_val = u_plus_values
+            self.u_minus_val = u_minus_values
+            self.z_val = z_values
+
+        return objective_values, x_values, u_plus_values, u_minus_values, z_values
+
+    def plot_wealth(self, initial_wealth, ax=None, show=True, include_transaction_costs=True):
+        """Plot expected portfolio wealth using optimized weights and forecast returns.
+
+        If enabled, transaction costs are deducted at each rebalance before that
+        period's forecast return is applied. Returns wealth at periods 0 through H.
+        """
+        if self.x_val is None or self.u_plus_val is None or self.u_minus_val is None:
+            raise RuntimeError("Run optimize() or optimize_sequential() before plotting wealth.")
+        if len(self.x_val) != self.H:
+            raise ValueError(f"Expected {self.H} optimized holdings, got {len(self.x_val)}.")
+        if not np.isfinite(initial_wealth) or initial_wealth <= 0:
+            raise ValueError("initial_wealth must be a positive finite number.")
+
+        wealth = np.empty(self.H + 1, dtype=float)
+        wealth[0] = initial_wealth
+        for h in range(self.H):
+            portfolio_return = float(np.asarray(self.mu[h]) @ np.asarray(self.x_val[h]))
+            transaction_cost = 0.0
+            if include_transaction_costs:
+                trades = np.asarray(self.u_plus_val[h]) + np.asarray(self.u_minus_val[h])
+                transaction_cost = float(np.asarray(self.c) @ trades)
+                if not np.isfinite(transaction_cost) or transaction_cost >= 1:
+                    raise ValueError(
+                        f"Transaction cost for period {h} must be finite and less than 100%."
+                    )
+
+            gross_return = 1 + portfolio_return
+            if not np.isfinite(gross_return) or gross_return < 0:
+                raise ValueError(f"Forecast return for period {h} implies negative wealth.")
+            wealth[h + 1] = wealth[h] * (1 - transaction_cost) * gross_return
+
+        import matplotlib.pyplot as plt
+
+        if ax is None:
+            _, ax = plt.subplots()
+        ax.plot(np.arange(self.H + 1), wealth, marker="o")
+        ax.set(
+            xlabel="Rebalance period",
+            ylabel="Portfolio wealth",
+            title="Expected portfolio wealth",
+        )
+        ax.grid(True, alpha=0.3)
+        if show:
+            plt.show()
+        return wealth
 
     def calculate_bond_risk_metrics(df, risk_free_rate=0.0, face_value=100.0):
         """
