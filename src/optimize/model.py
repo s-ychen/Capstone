@@ -17,6 +17,9 @@ from dataclasses import dataclass, field
 import cvxpy as cp
 import numpy as np
 
+W = 100.0           # solver weights are in percent
+OBJ_SCALE = 1e3     # solver objective = OBJ_SCALE * (gamma * variance + trading cost)
+
 
 @dataclass
 class Settings:
@@ -34,9 +37,14 @@ class Settings:
     ret_slack: float = 0.0025       # r_req = benchmark expected return - slack, per month (placeholder goal)
     solver: str = "CLARABEL"        # used by the heuristic path
     method: str = "heuristic"       # "heuristic" (relax, truncate, re-solve) or "misocp" (binary z, needs GUROBI)
+    backend: str = "cvxpy"          # "cvxpy" (CLARABEL heuristic, GUROBI via cvxpy) or "gurobipy" (src.optimize.grb, both methods)
     mip_solver: str = "GUROBI"
-    mip_gap: float = 1e-3           # relative MIP gap at which Gurobi stops
+    mip_gap: float = 1e-2           # relative MIP gap at which Gurobi stops
+    mip_focus: int = 2              # Gurobi MIPFocus, 2 = prove the bound (the incumbent is found early, the bound is slow)
     time_limit: float = 120.0       # Gurobi seconds per solve, the best incumbent is used if it stops early
+    mip_cand: int | None = 150      # misocp: binaries only for the mip_cand largest stage-1 weights (plus the heuristic's
+                                    # support), every other bond is fixed to 0. None keeps a binary on every bond.
+    mip_warm: bool = True           # misocp: solve the heuristic first and pass it to Gurobi as the MIP start
 
 
 @dataclass
@@ -53,14 +61,19 @@ class Solution:
     info: dict = field(default_factory=dict)
 
 
-def _build(P, S, x_init, s: Settings, scale: float, support=None, drop_return=False, mip=False):
-    """Returns (problem, x, up, um, z). z is None unless mip=True, then one boolean vector per planning date."""
+def _build(P, S, x_init, s: Settings, scale: float, support=None, drop_return=False, mip=False, allowed=None):
+    """Returns (problem, x, up, um, z). z is None unless mip=True, then one boolean vector per planning date.
+    allowed (bool |S|, mip only): bonds outside it are fixed to 0 so Gurobi presolve drops their binaries."""
     H, m = s.H, len(S)
     om = np.asarray(s.omega[:H], float)
     om = om / om.sum()
-    x = [cp.Variable(m, nonneg=True) for _ in range(H)]
-    up = [cp.Variable(m, nonneg=True) for _ in range(H)]
-    um = [cp.Variable(m, nonneg=True) for _ in range(H)]
+    # Solver variables are in percent (X = W x) and the objective is multiplied by OBJ_SCALE. Raw weights are about
+    # 4e-3 and the objective about 5e-4, well inside the solver tolerances (1e-6), which made Gurobi's answers noisy.
+    # x, up, um below are affine expressions in the true units, so the rest of the model is written as before.
+    Xr = [cp.Variable(m, nonneg=True) for _ in range(H)]
+    x = [v / W for v in Xr]
+    up = [cp.Variable(m, nonneg=True) / W for _ in range(H)]
+    um = [cp.Variable(m, nonneg=True) / W for _ in range(H)]
     z = [cp.Variable(m, boolean=True) for _ in range(H)] if mip else None
     cons, obj = [], 0
     c = P.c[S]
@@ -70,8 +83,10 @@ def _build(P, S, x_init, s: Settings, scale: float, support=None, drop_return=Fa
         # active weights a = x - b_hat; the part of a outside S is -b_hat there (constant)
         Fb = q.F.T @ q.b_hat
         f = q.F[S].T @ x[h] - Fb
-        var = cp.sum_squares(f) + cp.sum_squares(cp.multiply(np.sqrt(P.model.psi[S]), x[h] - bS))
-        obj += s.gamma * om[h] * var + c @ (up[h] + um[h])
+        # OBJ_SCALE * gamma * om * variance, with the scale inside the squares so the epigraph variables keep coefficient 1
+        k = np.sqrt(OBJ_SCALE * s.gamma * om[h])
+        obj += cp.sum_squares(k * f) + cp.sum_squares(cp.multiply(k * np.sqrt(P.model.psi[S]), x[h] - bS))
+        obj += OBJ_SCALE * (c @ (up[h] + um[h]))
         xt = x_init if h == 0 else cp.multiply(q.drift_gross[S] / (1 + q.r_b), x[h - 1])
         cons += [x[h] - xt == up[h] - um[h], cp.sum(x[h]) == 1]
         if s.max_active_w is not None:
@@ -88,15 +103,21 @@ def _build(P, S, x_init, s: Settings, scale: float, support=None, drop_return=Fa
         if ex.any():
             cons += [x[h][np.flatnonzero(ex)] == 0]
         if mip:
-            # z_i = 1 iff bond i is held: x_i <= z_i (x <= 1 since weights sum to 1), x_i >= ell_i z_i, at most k_max held
-            cons += [x[h] <= z[h], x[h] >= cp.multiply(q.ell[S], z[h]), cp.sum(z[h]) <= s.k_max]
+            # z_i = 1 iff bond i is held: x_i <= u_i z_i, x_i >= ell_i z_i, at most k_max held. u_i is the tightest known
+            # upper bound (weights sum to 1, and the active weight cap), a much stronger big-M than 1.
+            ub = np.minimum(1.0, bS + s.max_active_w) if s.max_active_w is not None else np.ones(m)
+            cons += [x[h] <= cp.multiply(ub, z[h]), x[h] >= cp.multiply(q.ell[S], z[h]), cp.sum(z[h]) <= s.k_max]
+            if allowed is not None and (~allowed).any():
+                cons += [z[h][np.flatnonzero(~allowed)] == 0]
         if support is not None:
             off = np.flatnonzero(~support)
             on = np.flatnonzero(support)
             if len(off):
                 cons += [x[h][off] == 0]
             cons += [x[h][on] >= q.ell[S][on]]
-    return cp.Problem(cp.Minimize(obj), cons), x, up, um, z
+    prob = cp.Problem(cp.Minimize(obj), cons)
+    prob.raw_x = Xr   # solver variables, for warm starts (set .value = W * x)
+    return prob, x, up, um, z
 
 
 def _solve(prob, solver, **opts):
@@ -120,27 +141,36 @@ def _solution(P, S, xs, up, um, support, status, scale, dropped, t0, info=None) 
 
 
 def _solve_misocp(P, S, x_init, s: Settings) -> Solution:
-    """Single MISOCP solve. If infeasible, drop the return goal first, then widen the delta tolerances (x2, x4, x8)."""
+    """Single MISOCP solve. If infeasible, drop the return goal first, then widen the delta tolerances (x2, x4, x8).
+    With mip_warm the heuristic runs first: its solution is the MIP start, its tolerance scale is where the fallback
+    ladder begins, and its stage-1 weights pick the bonds that get a binary (mip_cand)."""
     t0, ok = time.time(), ("optimal", "optimal_inaccurate", "user_limit")   # user_limit: time limit, incumbent used if any
-    for scale, dropped in [(1, False), (1, True), (2, True), (4, True), (8, True)]:
-        prob, x, up, um, z = _build(P, S, x_init, s, scale, drop_return=dropped, mip=True)
-        status = _solve(prob, s.mip_solver, TimeLimit=s.time_limit, MIPGap=s.mip_gap)
+    ladder = [(1, False), (1, True), (2, True), (4, True), (8, True)]
+    warm, allowed = None, None
+    if s.mip_warm or s.mip_cand is not None:
+        warm = _solve_heuristic(P, S, x_init, s)
+        ladder = [l for l in ladder if l >= (warm.delta_scale, warm.return_goal_dropped)] or ladder[-1:]
+        if s.mip_cand is not None:
+            allowed = warm.support.copy()
+            allowed[np.argsort(-warm.info["stage1_w"])[: s.mip_cand]] = True
+    for scale, dropped in ladder:
+        prob, x, up, um, z = _build(P, S, x_init, s, scale, drop_return=dropped, mip=True, allowed=allowed)
+        if s.mip_warm and warm is not None:
+            for h in range(s.H):
+                prob.raw_x[h].value = W * warm.x[h]
+                z[h].value = (warm.x[h] > 1e-9).astype(float)
+        status = _solve(prob, s.mip_solver, warm_start=s.mip_warm, TimeLimit=s.time_limit, MIPGap=s.mip_gap,
+                       MIPFocus=s.mip_focus)
         if status in ok and x[0].value is not None:
             break
     if status not in ok or x[0].value is None:
         raise RuntimeError(f"misocp failed: {status}")
     support = z[0].value > 0.5
     return _solution(P, S, [xi.value for xi in x], up[0].value, um[0].value, support, status, scale, dropped, t0,
-                     {"method": "misocp", "objective": float(prob.value)})
+                     {"method": "misocp", "objective": float(prob.value) / OBJ_SCALE})
 
 
-def solve_rebalance(P, S: np.ndarray, x_init: np.ndarray, s: Settings = Settings()) -> Solution:
-    """Plan H dates from the state in P (a src.params.Params), trade date 0. S indexes P.cusips, x_init is the current
-    drifted holdings on S. s.method picks the heuristic (default) or the MISOCP."""
-    if s.method == "misocp":
-        return _solve_misocp(P, S, x_init, s)
-    if s.method != "heuristic":
-        raise ValueError(f"unknown method {s.method!r}")
+def _solve_heuristic(P, S, x_init, s: Settings) -> Solution:
     t0 = time.time()
     scale, dropped = 1.0, False
     ok = ("optimal", "optimal_inaccurate")
@@ -166,4 +196,19 @@ def solve_rebalance(P, S: np.ndarray, x_init: np.ndarray, s: Settings = Settings
     if status not in ok:
         raise RuntimeError(f"stage 2 failed: {status}")
     return _solution(P, S, [xi.value for xi in x], up[0].value, um[0].value, support, status, scale, dropped, t0,
-                     {"method": "heuristic"})
+                     {"method": "heuristic", "stage1_w": w, "objective": float(prob.value) / OBJ_SCALE})
+
+
+def solve_rebalance(P, S: np.ndarray, x_init: np.ndarray, s: Settings = Settings()) -> Solution:
+    """Plan H dates from the state in P (a src.params.Params), trade date 0. S indexes P.cusips, x_init is the current
+    drifted holdings on S. s.method picks the heuristic (default) or the MISOCP."""
+    if s.method not in ("heuristic", "misocp"):
+        raise ValueError(f"unknown method {s.method!r}")
+    if s.backend == "gurobipy":
+        from .grb import solve_grb
+        return solve_grb(P, S, x_init, s)
+    if s.backend != "cvxpy":
+        raise ValueError(f"unknown backend {s.backend!r}")
+    if s.method == "misocp":
+        return _solve_misocp(P, S, x_init, s)
+    return _solve_heuristic(P, S, x_init, s)
