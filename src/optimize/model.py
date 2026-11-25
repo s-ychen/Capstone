@@ -27,8 +27,9 @@ class Settings:
     omega: tuple = (0.5, 0.5)       # weights on tracking variance per planning date, sum 1 (first H used)
     gamma: float = 3e3              # multiplier on tracking variance relative to proportional trading cost
     k_max: int = 150
-    max_active_w: float = 0.15      # x_i <= b_i + max_active_w (no shorting, so underweights are bounded by b_i)
-    psi_floor: bool = True          # lift each bond's psi to its sector median (see backtest.floor_psi)
+    max_active_w: float = 0.02      # x_i <= b_i + max_active_w (no shorting, so underweights are bounded by b_i)
+    psi_floor: bool = False         # lift each bond's psi to its sector median (backtest.floor_psi). Off: src.params
+                                    # already shrinks psi toward a duration-scaled sector prior
     delta_D: float = 0.25           # |D'a| in years
     delta_K: float = 0.20           # |K_j'a| per key rate, years
     delta_S: float = 0.25           # |D_spr'a|

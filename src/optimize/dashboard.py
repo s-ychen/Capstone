@@ -205,14 +205,16 @@ def main():
     shade(ax, df)
     pcs = [c for c in df.columns if c.startswith("var_pc")]
     ress = [c for c in df.columns if c.startswith("var_res_")]
-    total = df[pcs + ress].sum(axis=1)
+    crs = [c for c in df.columns if c.startswith("var_credit_")]
+    total = df[pcs + crs + ress].sum(axis=1)
     parts = [("Level (PC1)", "var_pc0", "#2a78d6"), ("Slope (PC2)", "var_pc1", "#6aa6ec"),
              ("Curvature (PC3)", "var_pc2", "#b5d1f5")]
+    parts += [(f"Credit, {c[11:].replace('_', ' ')}", c, RES_COLOR.get(c[11:], MUTED)) for c in crs]
     parts += [(f"Residual, {c[8:].replace('_', ' ')}", c, RES_COLOR.get(c[8:], MUTED)) for c in ress]
     bottom = np.zeros(len(df))
     for name, c, col in parts:
         h = ex_ante.to_numpy() * (df[c] / total).to_numpy()
-        ax.bar(d, h, width=20, bottom=bottom, color=col, label=name)
+        ax.bar(d, h, width=20, bottom=bottom, color=col, label=name, hatch="//" if c in crs else None)
         bottom += h
     style(ax, "Ex-ante TE by source (bp, split by variance share)")
     ax.set_ylim(0, 1.5 * bottom.max())

@@ -39,7 +39,7 @@ Heuristic outputs are the stage-2 solution. MIP outputs are the best Gurobi incu
 - `Settings`:
   - Objective: `H`, `omega`, `gamma`
   - Constraints: `k_max`, `max_active_w`, `delta_D`, `delta_K`, `delta_S`, `delta_C`, `eps2`, `ret_slack`
-  - Estimation: `psi_floor` (applied to `P` by the backtest)
+  - Estimation: `psi_floor` (applied to `P` by the backtest, off by default since `src.params` shrinks psi)
   - Path: `method`, `backend`
   - Solver: `solver`, `mip_solver`
   - MIP: `mip_gap`, `mip_focus`, `time_limit`, `mip_cand`, `mip_warm`

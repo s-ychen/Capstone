@@ -7,7 +7,7 @@ Computes the optimizer inputs of the D3 multi-period tracking model for one reba
 ```python
 from src.params import build_inputs
 P = build_inputs(asof, W, H=2, G=None, t_index=0, N=None,
-                 sigma_method="ledoit_wolf", p=3, freq="M", window=None)
+                 sigma_method="ledoit_wolf", p=3, freq="M", window=None, credit=True, psi_n0=12)
 ```
 
 | arg | meaning |
@@ -19,6 +19,8 @@ P = build_inputs(asof, W, H=2, G=None, t_index=0, N=None,
 | `sigma_method` | `sample`, `ewma`, `ledoit_wolf` for the key-rate covariance |
 | `p` | principal components kept (3) |
 | `freq`, `window` | monthly (`M`) or daily (`D`, scaled to monthly) curve changes, optional lookback in periods |
+| `credit` | add one credit factor per corporate sector to F and remove it from the residuals |
+| `psi_n0` | prior weight (months) in the psi shrinkage; `None` for the plain sample variance with sector median fill |
 
 Reads `data/processed/` only (bond_universe, prices_daily, yield_curve_daily). CLI summary: `uv run python -m src.params --asof 2025-06-30`.
 
@@ -30,7 +32,8 @@ Reads `data/processed/` only (bond_universe, prices_daily, yield_curve_daily). C
 |---|---|---|
 | `b` | benchmark weights b_t | AGG weights renormalised over bonds priced at `asof` |
 | `model.Sigma`, `Gamma`, `Lambda` | 8x8 key-rate covariance, top-p eigenvectors and eigenvalues | month-end changes of the 8 fitted zero yields up to `asof`, then PCA |
-| `model.psi` | residual variance per bond | variance of (month-end return + K'dy); stale prices excluded; under 6 observations uses sector median |
+| `model.credit_groups`, `credit_L` | credit factors (one per corporate sector) and the Cholesky factor of their covariance | each month, the implied common spread change of a sector, s = -(D_spr'e) / (D_spr'D_spr) over its bonds' residuals e; Ledoit-Wolf covariance over the months with every sector |
+| `model.psi` | residual variance per bond | variance of (month-end return + K'dy + D_spr s) after the credit factors; stale prices excluded; shrunk toward a sector prior D^2 kappa_sector with weight `psi_n0` months (prior alone under 6 observations) |
 | `c` | proportional trading cost | half the last bid-ask spread (90 days), sector median fallback |
 | `theta_F`, `theta_psi` | estimation-error covariance in factor form | Q / T_s (assumption, D3 does not define it) |
 | `stale`, `spread_solved`, `n_resid_obs` | data quality flags | |
@@ -41,8 +44,8 @@ Reads `data/processed/` only (bond_universe, prices_daily, yield_curve_daily). C
 |---|---|---|
 | `b_hat` | b_hat | drift previous b_hat by (1 + r), zero the exits, renormalise |
 | `mu_hat` | mu_hat | one-month return: reprice at next month-end off the same curve, plus coupons paid |
-| `K` (n x 8), `D`, `D_spr`, `C`, `dts` | K, D, D_spr, C | reprice off the NSS curve plus the bond's spread; 1 bp triangular bump per key rate for K, parallel bump for D, spread bump for D_spr, +/-10 bp for C; `dts` = D_spr x spread |
-| `F` (n x p) | Q_hat = F F' + diag(psi) | K Gamma Lambda^(1/2). Q is never formed |
+| `K` (n x 8), `D`, `D_spr`, `C`, `dts` | K, D, D_spr, C | reprice off the NSS curve plus the bond's spread; 1 bp triangular bump per key rate for K, parallel bump for D, spread bump for D_spr (set to 0 for Treasuries), +/-10 bp for C; `dts` = D_spr x spread |
+| `F` (n x (p + g)) | Q_hat = F F' + diag(psi) | [K Gamma Lambda^(1/2), B L] with B_ig = -D_spr_i for bonds in credit group g. Q is never formed |
 | `exits` | E | under one year to maturity at that date, forces z = 0 |
 | `ell` | l_i | min denomination x dirty price / 100 / wealth |
 | `wealth`, `r_req` | W_{t+h}, r_req | wealth grown at forecast benchmark return; (G / W)^(1/(N - t)) - 1 |
@@ -71,7 +74,9 @@ Next step is a function that takes `Params`, the current holdings and the user i
 
 ## Known gaps
 
-- Spread duration equals duration (constant additive spread), so those two D3 constraints coincide. Use `dts` if a distinct spread-risk measure is wanted.
+- Spread duration equals duration for spread products (constant additive spread). Treasuries get D_spr = 0, so the spread-duration constraint limits active credit exposure.
+- Credit factor history uses each bond's spread duration at `asof` for every past month.
+- psi out of sample (2018-03 to 2020-02, corporate + Treasury): typical corporates are calibrated, but errors have fat tails (most squared error from |z| > 4), Treasuries are underestimated early in the sample, and March 2020 is far outside any estimate.
 - MBS: bullet approximation, duration far above AGG's, psi mostly the sector median.
 - Sigma comes from about 17 to 24 monthly observations, so it is noisy.
 - Universe is the Oct 2026 holdings, so no bond is under one year to maturity in the data and `exits` is empty.

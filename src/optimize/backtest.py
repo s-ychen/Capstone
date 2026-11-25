@@ -128,7 +128,7 @@ def run(settings: Settings, params: dict, data, table, n_cand: int = N_CAND, sto
         wp = wp.groupby(level=0).sum()
         wb = pd.Series(q.b_hat, index=P.sector).groupby(level=0).sum()
         # ex-ante variance split (monthly units, same Q = F F' + diag(psi) the model uses, over all n bonds):
-        # one term per principal component of the curve and one residual term per sector
+        # one term per curve principal component, one per credit factor and one residual term per sector
         fa_all = q.F.T @ a
         res = pd.Series(P.model.psi * a**2, index=P.sector).groupby(level=0).sum()
         if store is not None:
@@ -144,8 +144,10 @@ def run(settings: Settings, params: dict, data, table, n_cand: int = N_CAND, sto
                    act_D=float(q.D @ a), act_C=float(q.C @ a), delta_scale=sol.delta_scale,
                    return_goal_dropped=sol.return_goal_dropped, status=sol.status, share_fallback=share_fb,
                    solve_s=time.time() - t0, port_D=float(q.D[S] @ x0), bench_D=float(q.D @ q.b_hat))
+        p_curve = len(P.model.Lambda)
         for j, v in enumerate(fa_all):
-            row[f"var_pc{j}"] = float(v**2)
+            key = f"var_pc{j}" if j < p_curve else f"var_credit_{P.model.credit_groups[j - p_curve]}"
+            row[key] = float(v**2)
         for k, v in res.items():
             row[f"var_res_{k}"] = float(v)
         for j, v in enumerate(q.K[S].T @ x0 - q.K.T @ q.b_hat):
