@@ -3,7 +3,7 @@
   1. relaxation (continuous, no cardinality), as the cvxpy heuristic's stage 1
   2. keep the k_max largest weights, fix the rest to 0 and lift the kept ones to the minimum lot, re-solve in place
      (warm basis, bounds change only). This is the incumbent, the same heuristic as the cvxpy path.
-  3. method "misocp" only: restore the bounds, add the binaries z to the same model, load the incumbent as the MIP
+  3. method "misocp" only (skipped when mip_skip_shortfall is set and the heuristic misses a soft goal): restore the bounds, add the binaries z to the same model, load the incumbent as the MIP
      start and let Gurobi improve it (MIPFocus, MIPGap, TimeLimit from Settings).
 Units and scaling are the same as the cvxpy path: solver weights X = W x in percent, objective times OBJ_SCALE with the
 scale folded into auxiliary variables, so every squared term enters as a plain sum of squares with coefficient 1.
@@ -14,10 +14,9 @@ import gurobipy as gp
 import numpy as np
 from gurobipy import GRB
 
-from .model import OBJ_SCALE, W, Solution, _solution, _theta_out
+from .model import BP, OBJ_SCALE, W, Solution, _check, _ladder, _out_norm, _solution, _theta_out
 
 _OK = (GRB.OPTIMAL, GRB.SUBOPTIMAL)
-_LADDER = [(1, False), (1, True), (2, True), (4, True), (8, True)]
 _ENV = None
 
 
@@ -44,6 +43,8 @@ class _Model:
         self.um = [mod.addMVar(m, lb=0.0, name=f"um{h}") for h in range(H)]
         self.delta_rows = []    # (constr, center, half_width, sign): rhs = center + sign * scale * half_width
         self.ret_rows = []      # return goal constraints, removed together when the goal is dropped
+        self.te_rows = []       # (qconstr, cap, out): sum of squares <= (scale * cap)^2 - out^2, in percent units
+        soft = s.objective == "tracking" and s.goal_penalty is not None
         self.ub0, self.ell = [], []
         c = P.c[S]
         obj = None
@@ -67,7 +68,8 @@ class _Model:
             qe.addTerms(np.ones(len(fv) + len(gv)), fv + gv, fv + gv)
             qe.addTerms(-1.0, tq)
             mod.addQConstr(qe <= 0)
-            term = tq + (OBJ_SCALE / W) * (c @ up) + (OBJ_SCALE / W) * (c @ um)   # up, um are in percent
+            cw = OBJ_SCALE * s.cost_weight / W                                  # up, um are in percent
+            term = tq + cw * (c @ up) + cw * (c @ um)
             obj = term if obj is None else obj + term
             xt = W * x_init if h == 0 else (q.drift_gross[S] / (1 + q.r_b)) * self.X[h - 1]
             mod.addConstr(X - xt == up - um)
@@ -79,11 +81,23 @@ class _Model:
             X.ub = ub
             self.ub0.append(ub)
             self.ell.append(q.ell[S])
-            for arr, d in ((q.D, s.delta_D), (q.D_spr, s.delta_S), (q.C, s.delta_C)):
+            for arr, d in ((q.D, s.delta_D), (q.dts, s.delta_DTS), (q.C, s.delta_C)):
                 self._delta(arr[S], W * (arr @ q.b_hat), W * d, X)
             Kb, KS = q.K.T @ q.b_hat, q.K[S]
             for j in range(KS.shape[1]):
                 self._delta(KS[:, j], W * Kb[j], W * s.delta_K, X)
+            if s.te_cap is not None:
+                # ex-ante TE ||(F'a, psi^(1/2) a)|| <= te_cap / sqrt(12), bonds outside S add the constant out
+                fe = mod.addMVar(kf, lb=-GRB.INFINITY)
+                mod.addConstr(fe == q.F[S].T @ X - W * Fb)
+                ge = mod.addMVar(m, lb=-GRB.INFINITY)
+                sq = np.sqrt(P.model.psi[S])
+                mod.addConstr(ge == sq * X - W * sq * bS)
+                qt = gp.QuadExpr()
+                tv_ = fe.tolist() + ge.tolist()
+                qt.addTerms(np.ones(len(tv_)), tv_, tv_)
+                cap, out = W * s.te_cap / np.sqrt(12), W * _out_norm(P.model.psi, S, q.b_hat)
+                self.te_rows.append((mod.addQConstr(qt <= cap**2 - out**2), cap, out))
             # return goal: mu'x - eps2 * ||Theta^(1/2) (x - b_hat)|| >= r_req, scaled by W (sv = W * ||.||).
             # The penalty is on the active weights so holding the benchmark costs nothing; bonds outside S add th_out.
             r_req = q.mu_hat @ q.b_hat - s.ret_slack
@@ -97,8 +111,16 @@ class _Model:
             qc.addTerms(np.ones(len(tv)), tv, tv)
             qc.addConstant((W * _theta_out(P, S, q.b_hat)) ** 2)
             qc.addTerms(-1.0, sv, sv)
-            self.ret_rows += [mod.addQConstr(qc <= 0),
-                              mod.addConstr(q.mu_hat[S] @ X - s.eps2 * sv >= W * r_req)]
+            self.ret_rows.append(mod.addQConstr(qc <= 0))
+            robust = q.mu_hat[S] @ X - s.eps2 * sv      # W * robust return of x
+            if s.objective == "return":
+                obj = obj + (OBJ_SCALE * om[h] / W) * (W * (q.mu_hat @ q.b_hat) - robust)
+            elif soft:
+                sh = mod.addVar(lb=0.0)                 # goal shortfall in bp
+                mod.addConstr(robust + (W / BP) * sh >= W * r_req)
+                obj = obj + (OBJ_SCALE * s.goal_penalty * om[h] / BP) * sh
+            else:
+                self.ret_rows.append(mod.addConstr(robust >= W * r_req))
         mod.setObjective(obj, GRB.MINIMIZE)
         mod.update()
         self.scale, self.dropped = 1.0, False
@@ -114,6 +136,8 @@ class _Model:
         self.scale = scale
         for con, center, half, sign in self.delta_rows:
             con.RHS = center + sign * scale * half
+        for con, cap, out in self.te_rows:
+            con.QCRHS = (scale * cap) ** 2 - out**2
 
     def optimize(self, **params):
         for k, v in params.items():
@@ -135,16 +159,17 @@ def _solve_ladder(M, ladder):
 
 
 def solve_grb(P, S, x_init, s) -> Solution:
+    _check(s)
     t0 = time.time()
     M = _Model(P, S, x_init, s)
     mod, H, m = M.mod, M.H, M.m
     # stage 1: relaxation
-    scale, dropped = _solve_ladder(M, _LADDER)
+    scale, dropped = _solve_ladder(M, _ladder(s))
     w = np.max([v.X for v in M.X], axis=0)
     w[np.any([P.periods[h].exits[S] for h in range(H)], axis=0)] = -1
     support = np.zeros(m, bool)
     support[np.argsort(-w)[: s.k_max]] = True
-    # stage 2: fix the support in place. If the minimum lots make it infeasible, drop the goal, then widen the deltas.
+    # stage 2: fix the support in place. If the minimum lots make it infeasible, drop a hard goal, then widen.
     off, on = np.flatnonzero(~support), np.flatnonzero(support)
     for h in range(H):
         ub = M.ub0[h].copy()
@@ -153,8 +178,7 @@ def solve_grb(P, S, x_init, s) -> Solution:
         lb = np.zeros(m)
         lb[on] = W * M.ell[h][on]
         M.X[h].lb = lb
-    ladder2 = [(scale, dropped), (scale, True), (2 * scale, True), (4 * scale, True), (8 * scale, True)]
-    for sc, dr in ladder2:
+    for sc, dr in _ladder(s, scale, dropped):
         M.set_tolerance(sc, dr)
         if M.optimize() in _OK:
             scale, dropped = sc, dr
@@ -163,9 +187,15 @@ def solve_grb(P, S, x_init, s) -> Solution:
         raise RuntimeError(f"gurobi stage 2 failed (status {mod.Status})")
     xs, up0, um0 = M.values()
     heur_obj = mod.ObjVal / OBJ_SCALE
+    heur = _solution(P, S, xs, up0, um0, support, "optimal" if mod.Status == GRB.OPTIMAL else "optimal_inaccurate",
+                     scale, dropped, t0, {"method": "heuristic", "backend": "gurobipy", "objective": heur_obj}, s)
     if s.method == "heuristic":
-        return _solution(P, S, xs, up0, um0, support, "optimal" if mod.Status == GRB.OPTIMAL else "optimal_inaccurate",
-                         scale, dropped, t0, {"method": "heuristic", "backend": "gurobipy", "objective": heur_obj})
+        return heur
+    # the goal is out of reach for the heuristic: the MIP would spend its time proving the bound, not improving x
+    soft = s.objective == "tracking" and s.goal_penalty is not None
+    if soft and s.mip_skip_shortfall and heur.shortfall > 1e-6:
+        heur.info.update(method="misocp", mip_skipped=True)
+        return heur
 
     # MISOCP on the same model: restore bounds, add z, start from the stage 2 solution
     allowed = support.copy()
@@ -196,4 +226,4 @@ def solve_grb(P, S, x_init, s) -> Solution:
     st = "optimal" if status == GRB.OPTIMAL else "user_limit" if status == GRB.TIME_LIMIT else "optimal_inaccurate"
     return _solution(P, S, xs, up0, um0, z0.X > 0.5, st, scale, dropped, t0,
                      {"method": "misocp", "backend": "gurobipy", "objective": mod.ObjVal / OBJ_SCALE,
-                      "heuristic_objective": heur_obj, "mip_gap": float(mod.MIPGap), "nodes": int(mod.NodeCount)})
+                      "heuristic_objective": heur_obj, "mip_gap": float(mod.MIPGap), "nodes": int(mod.NodeCount)}, s)
