@@ -28,6 +28,8 @@ MODES = {
     "return": dict(gamma=10.0, goal_penalty=None, cost_weight=1 / 12),
 }
 DELTAS = ("delta_D", "delta_K", "delta_DTS", "delta_C")
+IR_MAX = 1.0    # ceiling on g / te_cap (information ratio). Sustained IRs above about 1 are rare, so a higher goal
+                # is reported as infeasible for that risk tolerance instead of being chased
 WARMUP = 7      # month-ends of history needed before the start (6 monthly curve changes for Sigma and psi)
 
 
@@ -52,6 +54,11 @@ def make_settings(g: float, risk_tol: str, k_max: int, mode: str = "tracking", *
         **{k: getattr(base, k) * r["tol_scale"] for k in DELTAS},
     )
     kw.update(overrides)
+    if kw["te_cap"] is not None and g > IR_MAX * kw["te_cap"]:
+        raise ValueError(f"infeasible goal: g = {1e4 * g:.0f} bp/yr needs an information ratio (active return / "
+                         f"tracking error) of {g / kw['te_cap']:.1f} at a {1e4 * kw['te_cap']:.0f} bp TE cap "
+                         f"({risk_tol} risk tolerance), above the {IR_MAX:g} limit. At most "
+                         f"{1e4 * IR_MAX * kw['te_cap']:.0f} bp/yr: lower g or raise the risk tolerance")
     H = kw.get("H", base.H)
     if "omega" not in overrides:
         kw["omega"] = (1 / H,) * H
