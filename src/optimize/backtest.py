@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 
 from src.params import build_cashflows, build_inputs, load_data
+from src.params.frictions import COST_LOOKBACK_DAYS
 from src.params.krd import cash_between
 
 from .model import Settings, solve_rebalance
@@ -83,6 +84,19 @@ def realised_returns(P, d0, d1, data, table) -> tuple[np.ndarray, float, np.ndar
     return r, float(bad.mean()), bad, p0
 
 
+def exit_cost(drop: dict, d, prices: pd.DataFrame, c_prev: dict) -> float:
+    """Share of wealth lost selling `drop` (cusip -> weight) at d for half the bid-ask: each bond's last quote in the
+    lookback window to d, else its cost at the previous rebalance."""
+    if not drop:
+        return 0.0
+    d = pd.Timestamp(d)
+    p = prices[(prices["date"] > d - pd.Timedelta(days=COST_LOOKBACK_DAYS)) & (prices["date"] <= d)
+               & prices["cusip"].isin(list(drop))]
+    half = (p.dropna(subset=["bid_ask_spread_bps"]).sort_values("date")
+             .groupby("cusip")["bid_ask_spread_bps"].last() / 2 * 1e-4)
+    return float(sum(w * half.get(c, c_prev.get(c, 0.0)) for c, w in drop.items()))
+
+
 def run(settings: Settings, params: dict, data, table, n_cand: int = N_CAND, store: dict | None = None) -> pd.DataFrame:
     """One backtest. Returns one row per rebalance date. If store is given, it collects the pieces the dashboard needs
     for a daily wealth path: store["holdings"] (list of date, cusip, x frames, this config) and store["bond_month"]
@@ -90,16 +104,18 @@ def run(settings: Settings, params: dict, data, table, n_cand: int = N_CAND, sto
     dates = list(params)
     ends = data.panel.index.get_level_values("month_end").unique().sort_values()
     hold: dict[str, float] = {}
+    c_prev: dict[str, float] = {}
     rows = []
     for d in dates:
         P = floor_psi(params[d]) if settings.psi_floor else params[d]
         d1 = ends[ends.get_loc(d) + 1]
         q = P.periods[0]
         pos = {c: i for i, c in enumerate(P.cusips)}
-        hold = {c: w for c, w in hold.items() if c in pos}
-        if hold:
-            tot = sum(hold.values())
-            hold = {c: w / tot for c, w in hold.items()}
+        # held bonds that left the index (or have no price at d) are sold at half the bid-ask; the proceeds stay in
+        # cash, so x_init sums to under 1 and the optimizer pays to reinvest them
+        drop = {c: w for c, w in hold.items() if c not in pos}
+        exit_c = exit_cost(drop, d, data.prices, c_prev)
+        hold = {c: w / (1 - exit_c) for c, w in hold.items() if c in pos}
         # a bond whose minimum lot exceeds half an equal share (0.5 / k_max) is excluded, so k_max minimum lots always fit the budget
         lot_ok = np.all([pe.ell <= 0.5 / settings.k_max for pe in P.periods[: settings.H]], axis=0)
         eligible = ~P.stale & ~q.exits & np.isfinite(q.mu_hat) & lot_ok
@@ -116,9 +132,11 @@ def run(settings: Settings, params: dict, data, table, n_cand: int = N_CAND, sto
         cost = float(P.c[S] @ trade)
         r, share_fb, bad, p0 = realised_returns(P, d, d1, data, table)
         gross = float(x0 @ r[S])
-        net = (1 - cost) * (1 + gross) - 1
+        net = (1 - exit_c) * (1 - cost) * (1 + gross) - 1
+        cost = 1 - (1 - exit_c) * (1 - cost)
         bench = float(q.b_hat @ r)
         hold = {P.cusips[i]: w * (1 + r[i]) / (1 + gross) for i, w in zip(S, x0) if w > 1e-9}
+        c_prev = {P.cusips[i]: P.c[i] for i, w in zip(S, x0) if w > 1e-9}
         a = np.zeros(len(P.cusips))
         a[:] = -q.b_hat
         a[S] += x0
@@ -139,7 +157,7 @@ def run(settings: Settings, params: dict, data, table, n_cand: int = N_CAND, sto
                 store["bond_month"][d] = pd.DataFrame({"date": d, "cusip": P.cusips, "sector": P.sector, "b": q.b_hat,
                                                        "r": r, "bad": bad, "p0": p0})
         row = dict(date=d, split=split_of(d), ret_port=net, ret_gross=gross, ret_bench=bench, active=net - bench,
-                   turnover=float(d_x.clip(0).sum()), cost=cost, n_hold=int((x0 > 1e-6).sum()),
+                   turnover=float(d_x.clip(0).sum()), cost=cost, exit_cost=exit_c, n_hold=int((x0 > 1e-6).sum()),
                    n_support=int(sol.support.sum()), n_bonds=len(P.cusips), track_var_fcst=sol.track_var,
                    act_D=float(q.D @ a), act_C=float(q.C @ a), delta_scale=sol.delta_scale,
                    return_goal_dropped=sol.return_goal_dropped, status=sol.status, share_fallback=share_fb,
