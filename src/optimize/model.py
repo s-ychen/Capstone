@@ -62,6 +62,13 @@ class Solution:
     info: dict = field(default_factory=dict)
 
 
+def _theta_out(P, S, b):
+    """sqrt(sum of theta_psi b^2 over bonds outside S), the idiosyncratic part of ||Theta^(1/2) a|| that S cannot change."""
+    out = np.ones(len(b), bool)
+    out[S] = False
+    return float(np.sqrt(np.sum(P.theta_psi[out] * b[out] ** 2)))
+
+
 def _build(P, S, x_init, s: Settings, scale: float, support=None, drop_return=False, mip=False, allowed=None):
     """Returns (problem, x, up, um, z). z is None unless mip=True, then one boolean vector per planning date.
     allowed (bool |S|, mip only): bonds outside it are fixed to 0 so Gurobi presolve drops their binaries."""
@@ -98,7 +105,11 @@ def _build(P, S, x_init, s: Settings, scale: float, support=None, drop_return=Fa
         cons += [cp.abs(q.K[S].T @ x[h] - q.K.T @ q.b_hat) <= s.delta_K * scale]
         if not drop_return:
             r_req = q.mu_hat @ q.b_hat - s.ret_slack
-            theta = cp.hstack([P.theta_F[S].T @ x[h], cp.multiply(np.sqrt(P.theta_psi[S]), x[h])])
+            # robustness on the active return: ||Theta^(1/2) (x - b_hat)||, zero when x = b_hat.
+            # Bonds outside S have active weight -b_hat, which adds the constant th_out to the norm.
+            th_out = _theta_out(P, S, q.b_hat)
+            theta = cp.hstack([P.theta_F[S].T @ x[h] - P.theta_F.T @ q.b_hat,
+                               cp.multiply(np.sqrt(P.theta_psi[S]), x[h] - bS), np.array([th_out])])
             cons += [q.mu_hat[S] @ x[h] - s.eps2 * cp.norm(theta, 2) >= r_req]
         ex = q.exits[S]
         if ex.any():

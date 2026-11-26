@@ -14,7 +14,7 @@ import gurobipy as gp
 import numpy as np
 from gurobipy import GRB
 
-from .model import OBJ_SCALE, W, Solution, _solution
+from .model import OBJ_SCALE, W, Solution, _solution, _theta_out
 
 _OK = (GRB.OPTIMAL, GRB.SUBOPTIMAL)
 _LADDER = [(1, False), (1, True), (2, True), (4, True), (8, True)]
@@ -84,16 +84,18 @@ class _Model:
             Kb, KS = q.K.T @ q.b_hat, q.K[S]
             for j in range(KS.shape[1]):
                 self._delta(KS[:, j], W * Kb[j], W * s.delta_K, X)
-            # return goal: mu'x - eps2 * ||theta|| >= r_req, scaled by W (thX = W * theta, sX = W * ||theta||)
+            # return goal: mu'x - eps2 * ||Theta^(1/2) (x - b_hat)|| >= r_req, scaled by W (sv = W * ||.||).
+            # The penalty is on the active weights so holding the benchmark costs nothing; bonds outside S add th_out.
             r_req = q.mu_hat @ q.b_hat - s.ret_slack
             thF = mod.addMVar(P.theta_F.shape[1], lb=-GRB.INFINITY)
             thP = mod.addMVar(m, lb=-GRB.INFINITY)
             sv = mod.addVar(lb=0.0)
-            mod.addConstr(thF == P.theta_F[S].T @ X)
-            mod.addConstr(thP == np.sqrt(P.theta_psi[S]) * X)
+            mod.addConstr(thF == P.theta_F[S].T @ X - W * (P.theta_F.T @ q.b_hat))
+            mod.addConstr(thP == np.sqrt(P.theta_psi[S]) * X - W * np.sqrt(P.theta_psi[S]) * bS)
             qc = gp.QuadExpr()
             tv = thF.tolist() + thP.tolist()
             qc.addTerms(np.ones(len(tv)), tv, tv)
+            qc.addConstant((W * _theta_out(P, S, q.b_hat)) ** 2)
             qc.addTerms(-1.0, sv, sv)
             self.ret_rows += [mod.addQConstr(qc <= 0),
                               mod.addConstr(q.mu_hat[S] @ X - s.eps2 * sv >= W * r_req)]
