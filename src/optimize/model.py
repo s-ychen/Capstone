@@ -42,6 +42,13 @@ class Settings:
     delta_K: float = 0.20           # |K_j'a| per key rate, years
     delta_DTS: float = 0.0025       # |dts'a|, years x decimal spread (0.0025 = 0.25 yrs at 100 bp)
     delta_C: float = 15.0           # |C'a|
+    tol_mode: str = "flat"          # "flat": the delta_K, delta_DTS, delta_C above. "relative": each band is
+                                    # max(tol_rel * |benchmark exposure|, floor), per key rate, from the benchmark at
+                                    # each planning date. delta_D stays flat in both (it controls the level)
+    tol_rel: float = 0.10           # relative mode: allowed active exposure as a share of the benchmark's
+    floor_K: float = 0.02           # relative mode floors, so near-zero exposures (e.g. 6m KRD) need not match exactly
+    floor_DTS: float = 0.0005
+    floor_C: float = 2.0
     eps2: float = 0.5               # robustness multiplier in the return goal
     ret_slack: float = 0.0025       # r_req = benchmark expected return - slack, per month (placeholder goal)
     solver: str = "CLARABEL"        # used by the heuristic path
@@ -108,7 +115,20 @@ def _ladder(s: Settings, scale=1.0, dropped=False) -> list:
     return [(scale, dropped), (scale, True), (2 * scale, True), (4 * scale, True), (8 * scale, True)]
 
 
+def bands(q, s: Settings) -> dict:
+    """Half-widths of the exposure tolerances at one planning date q, before the ladder's scale. K is per key rate."""
+    nk = q.K.shape[1]
+    if s.tol_mode == "flat":
+        return dict(D=s.delta_D, DTS=s.delta_DTS, C=s.delta_C, K=np.full(nk, s.delta_K))
+    b = q.b_hat
+    rel = lambda v, floor: np.maximum(s.tol_rel * np.abs(v), floor)
+    return dict(D=s.delta_D, DTS=float(rel(q.dts @ b, s.floor_DTS)), C=float(rel(q.C @ b, s.floor_C)),
+                K=rel(q.K.T @ b, s.floor_K))
+
+
 def _check(s: Settings):
+    if s.tol_mode not in ("flat", "relative"):
+        raise ValueError(f"unknown tol_mode {s.tol_mode!r}")
     if s.objective not in ("tracking", "return"):
         raise ValueError(f"unknown objective {s.objective!r}")
     if s.objective == "return" and s.te_cap is None:
@@ -147,10 +167,11 @@ def _build(P, S, x_init, s: Settings, scale: float, support=None, drop_return=Fa
         cons += [x[h] - xt == up[h] - um[h], cp.sum(x[h]) == 1]
         if s.max_active_w is not None:
             cons += [x[h] <= bS + s.max_active_w]
-        for arr, d in ((q.D, s.delta_D), (q.dts, s.delta_DTS), (q.C, s.delta_C)):
+        bd = bands(q, s)
+        for arr, d in ((q.D, bd["D"]), (q.dts, bd["DTS"]), (q.C, bd["C"])):
             e = arr[S] @ x[h] - arr @ q.b_hat
             cons += [cp.abs(e) <= d * scale]
-        cons += [cp.abs(q.K[S].T @ x[h] - q.K.T @ q.b_hat) <= s.delta_K * scale]
+        cons += [cp.abs(q.K[S].T @ x[h] - q.K.T @ q.b_hat) <= bd["K"] * scale]
         if s.te_cap is not None:
             # ex-ante TE: ||(F'a, psi^(1/2) a)|| with the constant part from bonds outside S, in percent like X
             te = cp.hstack([W * f, cp.multiply(W * np.sqrt(P.model.psi[S]), x[h] - bS),

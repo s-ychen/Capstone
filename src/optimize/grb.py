@@ -14,7 +14,7 @@ import gurobipy as gp
 import numpy as np
 from gurobipy import GRB
 
-from .model import BP, OBJ_SCALE, W, Solution, _check, _ladder, _out_norm, _solution, _theta_out
+from .model import BP, OBJ_SCALE, W, Solution, _check, _ladder, _out_norm, _solution, _theta_out, bands
 
 _OK = (GRB.OPTIMAL, GRB.SUBOPTIMAL)
 _ENV = None
@@ -81,11 +81,12 @@ class _Model:
             X.ub = ub
             self.ub0.append(ub)
             self.ell.append(q.ell[S])
-            for arr, d in ((q.D, s.delta_D), (q.dts, s.delta_DTS), (q.C, s.delta_C)):
+            bd = bands(q, s)
+            for arr, d in ((q.D, bd["D"]), (q.dts, bd["DTS"]), (q.C, bd["C"])):
                 self._delta(arr[S], W * (arr @ q.b_hat), W * d, X)
             Kb, KS = q.K.T @ q.b_hat, q.K[S]
             for j in range(KS.shape[1]):
-                self._delta(KS[:, j], W * Kb[j], W * s.delta_K, X)
+                self._delta(KS[:, j], W * Kb[j], W * bd["K"][j], X)
             if s.te_cap is not None:
                 # ex-ante TE ||(F'a, psi^(1/2) a)|| <= te_cap / sqrt(12), bonds outside S add the constant out
                 fe = mod.addMVar(kf, lb=-GRB.INFINITY)

@@ -5,7 +5,8 @@ The user picks a return goal g (annualized active), a horizon T (years) from a s
   * "tracking": track the benchmark as closely as possible while aiming for g (soft goal, shortfall penalized)
   * "return": earn as much robust active return as the risk tolerance allows, g is only reported against
 Risk tolerance sets three things together: the ex-ante tracking error cap, eps2 (how much confidence the return goal
-needs, larger = more cautious) and tol_scale (multiplier on the duration, key rate, DTS and convexity tolerances).
+needs, larger = more cautious) and tol_scale (multiplier on the duration, key rate, DTS and convexity tolerances,
+flat or relative, see Settings.tol_mode).
 Low tolerance is tight on all three. Every value here is a placeholder until calibration.
 """
 from dataclasses import replace
@@ -51,7 +52,7 @@ def make_settings(g: float, risk_tol: str, k_max: int, mode: str = "tracking", *
         eps2=r["eps2"],
         # the model's goal is robust active return >= -ret_slack per month, so the slack is minus the monthly goal
         ret_slack=-((1 + g) ** (1 / 12) - 1),
-        **{k: getattr(base, k) * r["tol_scale"] for k in DELTAS},
+        **{k: getattr(base, k) * r["tol_scale"] for k in DELTAS + ("tol_rel",)},   # floors are not scaled
     )
     kw.update(overrides)
     if kw["te_cap"] is not None and g > IR_MAX * kw["te_cap"]:
