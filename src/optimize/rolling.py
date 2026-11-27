@@ -22,14 +22,17 @@ from .model import Settings, solve_rebalance
 CATCH_UP = dict(on=True, cap=2.0, floor=0.0)
 
 
-def candidates(P, hold: dict, k_max: int, H: int, n_cand: int):
+def candidates(P, hold: dict, k_max: int, H: int, n_cand: int, max_active_w: float | None = None):
     """Candidate index set S and x_init (current holdings on S). S is the n_cand largest benchmark weights among
-    eligible bonds (not stale, not exiting, minimum lot small enough that k_max lots fit) plus current holdings."""
+    eligible bonds (not stale, not exiting, minimum lot small enough that k_max lots fit and, with max_active_w,
+    within the per-bond cap b_i + max_active_w) plus current holdings."""
     q = P.periods[0]
     pos = {c: i for i, c in enumerate(P.cusips)}
-    lot_ok = np.all([pe.ell <= 0.5 / k_max for pe in P.periods[:H]], axis=0)
+    lot_ok = np.all([(pe.ell <= 0.5 / k_max) & (max_active_w is None or pe.ell <= pe.b_hat + max_active_w)
+                     for pe in P.periods[:H]], axis=0)
     eligible = ~P.stale & ~q.exits & np.isfinite(q.mu_hat) & lot_ok
-    top = np.argsort(-np.where(eligible, q.b_hat, -1))[:n_cand]   # ineligible bonds get -1, sorting to the end
+    el = np.flatnonzero(eligible)
+    top = el[np.argsort(-q.b_hat[el])[:n_cand]]
     S = np.unique(np.concatenate([top, [pos[c] for c in hold]])).astype(int)
     x_init = np.array([hold.get(P.cusips[i], 0.0) for i in S])
     return S, x_init
@@ -61,7 +64,7 @@ def run(s: Settings, dates, ends, data, data_for, table, W: float, params: dict,
         drop = {c: w for c, w in hold.items() if c not in pos}
         exit_c = exit_cost(drop, d, data.prices, c_prev)
         hold = {c: w / (1 - exit_c) for c, w in hold.items() if c in pos}
-        S, x_init = candidates(P, hold, s.k_max, s.H, n_cand)
+        S, x_init = candidates(P, hold, s.k_max, s.H, n_cand, s.max_active_w)
         sol = solve_rebalance(P, S, x_init, sk)
         x0 = sol.x[0] / sol.x[0].sum()
         d_x = x0 - x_init

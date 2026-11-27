@@ -59,7 +59,7 @@ def estimate_psi(E: np.ndarray, sector: np.ndarray, min_obs: int = 6) -> tuple[n
     return psi, n_obs
 
 
-def credit_factors(E: np.ndarray, D_spr: np.ndarray, group: np.ndarray, min_bonds: int = 20
+def credit_factors(E: np.ndarray, D_spr: np.ndarray, group: np.ndarray, min_bonds: int = 20, min_months: int = 3
                    ) -> tuple[list, np.ndarray, np.ndarray]:
     """Credit factor returns and the residuals left after removing them.
 
@@ -67,18 +67,29 @@ def credit_factors(E: np.ndarray, D_spr: np.ndarray, group: np.ndarray, min_bond
     s_gk = -(D'e) / (D'D) over the bonds in g with a valid residual that month (least squares of e on -D_spr).
     Bonds outside every group (group None, e.g. Treasuries) keep their residual. D_spr is the spread duration at
     the as-of date, used for every past month (an approximation, spread durations move slowly).
-    Returns (groups, S g x T with NaN where under min_bonds, U = E + D_spr * s).
+    The factor covariance needs min_months months where every group has a value, so the sparsest groups are dropped
+    until that holds. Bonds in a dropped group keep their full residual, so psi still carries their credit risk.
+    Returns (groups kept, S g x T with NaN where under min_bonds, U = E + D_spr * s).
     """
     groups = sorted({g for g in group if g is not None})
     S = np.full((len(groups), E.shape[1]), np.nan)
-    U = E.copy()
     for j, g in enumerate(groups):
         m = (group == g) & (D_spr > 0)
         for k in range(E.shape[1]):
             ok = m & np.isfinite(E[:, k])
             if ok.sum() >= min_bonds:
                 S[j, k] = -(D_spr[ok] @ E[ok, k]) / (D_spr[ok] @ D_spr[ok])
-                U[ok, k] = E[ok, k] + D_spr[ok] * S[j, k]
+    keep = np.ones(len(groups), bool)
+    while keep.any() and np.all(np.isfinite(S[keep]), axis=0).sum() < min_months:
+        n_fin = np.where(keep, np.isfinite(S).sum(axis=1), np.inf)
+        keep[np.argmin(n_fin)] = False
+    groups, S = [g for g, k in zip(groups, keep) if k], S[keep]
+    U = E.copy()
+    for j, g in enumerate(groups):
+        m = (group == g) & (D_spr > 0)
+        for k in np.flatnonzero(np.isfinite(S[j])):
+            ok = m & np.isfinite(E[:, k])
+            U[ok, k] = E[ok, k] + D_spr[ok] * S[j, k]
     return groups, S, U
 
 

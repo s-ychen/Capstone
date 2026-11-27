@@ -133,6 +133,8 @@ def _check(s: Settings):
         raise ValueError(f"unknown objective {s.objective!r}")
     if s.objective == "return" and s.te_cap is None:
         raise ValueError('objective "return" needs te_cap, otherwise the active risk is unbounded')
+    if len(s.omega) < s.H:
+        raise ValueError(f"omega has {len(s.omega)} weights but H = {s.H}")
 
 
 def _build(P, S, x_init, s: Settings, scale: float, support=None, drop_return=False, mip=False, allowed=None):

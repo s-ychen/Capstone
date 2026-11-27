@@ -31,7 +31,8 @@ def fit_factor_model(dY, psi: np.ndarray, method: str = "ledoit_wolf", p: int = 
     """Estimate Sigma from key-rate changes dY, keep p principal components, attach residual variances psi.
 
     credit (g x T, NaN allowed) are the credit factor returns from residual.credit_factors. Their covariance is
-    Ledoit-Wolf over the months where every group has a value. Fewer than 3 such months leaves the credit factors out.
+    Ledoit-Wolf over the months where every group has a value. credit_factors drops sparse groups so at least 3 such
+    months exist; fewer than 3 here leaves the credit factors out.
     """
     Sigma = estimate_sigma(dY, method, halflife, scale)
     pc = pca(Sigma, p)
