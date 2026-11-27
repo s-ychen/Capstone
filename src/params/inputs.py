@@ -19,12 +19,12 @@ import pandas as pd
 from data_cleaning import config as C
 
 from .covariance import TRADING_DAYS_PER_MONTH, key_rate_changes
-from .factor_model import FactorModel, fit_factor_model, loadings, theta_factor
+from .factor_model import FactorModel, credit_exposures, fit_factor_model, loadings, theta_factor
 from .forecast import (benchmark_return, eligibility_exits, expected_returns, forecast_benchmark, step_date)
 from .frictions import min_lot_weight, required_return, trading_cost
 from .krd import BP, analytics, build_cashflows, nss_params
 from .prices import curve_row, load_processed, month_end_prices
-from .residual import estimate_psi, residual_returns
+from .residual import ResidualPanel, credit_factors, estimate_psi, residual_returns, shrink_psi
 
 log = logging.getLogger(__name__)
 
@@ -53,10 +53,10 @@ class PeriodInputs:
     mu_hat: np.ndarray          # forecast one-month returns from this date (return-goal constraint)
     K: np.ndarray               # n x 8 key-rate durations at this date (aged bonds, constant curve)
     D: np.ndarray               # modified duration
-    D_spr: np.ndarray           # spread duration (equal to D when spread enters additively, see README note in main)
+    D_spr: np.ndarray           # spread duration: equal to D for spread products (additive spread), 0 for Treasuries
     dts: np.ndarray             # duration times spread, the alternative credit-risk measure from D2 eq. 6
     C: np.ndarray               # convexity
-    F: np.ndarray               # n x p, Q_hat = F F' + diag(psi)
+    F: np.ndarray               # n x (p + g), curve then credit factors, Q_hat = F F' + diag(psi)
     exits: np.ndarray           # E_{t+h}: bool, bonds that must have z = 0 (under one year to maturity)
     ell: np.ndarray             # minimum lot as a weight, at forecast wealth
     r_req: float                # required per-period return at forecast wealth (NaN if no goal given)
@@ -96,11 +96,16 @@ def _snap(curve: pd.DataFrame, panel: pd.DataFrame, asof) -> pd.Timestamp:
 
 def build_inputs(asof, W: float, H: int = 2, G: float | None = None, t_index: int = 0, N: int | None = None,
                  sigma_method: str = "ledoit_wolf", p: int = 3, freq: str = "M", window: int | None = None,
-                 halflife: float = 12, min_obs: int = 6, data: Data | None = None) -> Params:
+                 halflife: float = 12, min_obs: int = 6, credit: bool = True, psi_n0: float | None = 12,
+                 data: Data | None = None, resid: ResidualPanel | None = None) -> Params:
     """Estimate Q_t (factor form), K, D, D_spr, C, mu_hat, b_hat, exits, c, lots, r_req and Theta at `asof`.
 
     W: current wealth W_t in dollars (sets the minimum-lot weights). G: terminal wealth goal (see frictions.terminal_goal); with t_index (months elapsed) and
     N (total rebalances) it gives r_req, otherwise r_req is NaN. window limits the months behind Sigma and psi.
+    credit: one credit factor per corporate sector in F (residual.credit_factors), removed from the residuals before
+    psi. psi_n0: weight in months of the duration-scaled sector prior in psi (residual.shrink_psi); None gives the
+    plain sample variance with a sector median fill (residual.estimate_psi). resid: a ResidualPanel over the same
+    panel and curve, reused across dates instead of repricing every past month (same result).
     """
     data = data or load_data()
     universe, prices, curve, panel, holdings = data
@@ -131,14 +136,26 @@ def build_inputs(asof, W: float, H: int = 2, G: float | None = None, t_index: in
     maturity = terms["maturity_date"].to_numpy().astype("datetime64[D]")
     b = terms["agg_weight"].to_numpy(float)
     b = b / b.sum()
+    asset_type = terms["asset_type"].to_numpy()
+    # Treasuries carry no spread risk: their spread to the fitted curve is a pricing residual, not credit
+    no_spread = asset_type == "treasury"
+    group = np.where(asset_type == "corporate", sector, None) if credit else np.full(len(sector), None)
+    D_spr0 = np.where(no_spread, 0.0, np.nan_to_num(a0.D_spr))
 
     # Q_t: key-rate covariance from curve changes up to asof, residual variance from month-end returns
-    sub = panel[panel.index.get_level_values("cusip").isin(cusips)]
-    E, _ = residual_returns(table, sub, curve, asof, window)
-    psi, n_obs = estimate_psi(E, sector, min_obs)
+    if resid is not None and resid.covers(cusips):
+        E = resid.get(cusips, asof, window)
+    else:
+        sub = panel[panel.index.get_level_values("cusip").isin(cusips)]
+        E, _ = residual_returns(table, sub, curve, asof, window)
+    groups, S_cr, U = credit_factors(E, D_spr0, group)
+    if psi_n0 is None:
+        psi, n_obs = estimate_psi(U, sector, min_obs)
+    else:
+        psi, n_obs = shrink_psi(U, a0.D, sector, min_obs, psi_n0)
     dY = key_rate_changes(curve, end=asof, freq=freq, window=window)
     scale = TRADING_DAYS_PER_MONTH if freq == "D" else 1.0
-    fm = fit_factor_model(dY, psi, sigma_method, p, halflife, scale)
+    fm = fit_factor_model(dY, psi, sigma_method, p, halflife, scale, S_cr, groups)
 
     c = trading_cost(prices, cusips, sector, asof)
     spread_bps = a0.spread / BP
@@ -158,15 +175,20 @@ def build_inputs(asof, W: float, H: int = 2, G: float | None = None, t_index: in
             r_b, drift = np.nan, None
         dirty = terms["dirty_price"].to_numpy(float) if h == 0 else np.where(a.price > 0, a.price, terms["dirty_price"])
         K = np.nan_to_num(a.K)
+        D_spr = np.where(no_spread, 0.0, np.nan_to_num(a.D_spr))
         periods.append(PeriodInputs(
             h=h, date=date, b_hat=b_h, mu_hat=np.nan_to_num(r), K=K, D=np.nan_to_num(a.D),
-            D_spr=np.nan_to_num(a.D_spr), dts=np.nan_to_num(a.dts), C=np.nan_to_num(a.C), F=loadings(K, fm),
+            D_spr=D_spr, dts=np.where(no_spread, 0.0, np.nan_to_num(a.dts)), C=np.nan_to_num(a.C),
+            F=loadings(K, fm, D_spr, group),
             exits=exits, ell=min_lot_weight(min_denom, dirty, sector, W_h),
             r_req=required_return(G, W_h, t_index + h, N) if G is not None and N is not None else np.nan,
             wealth=W_h, drift_gross=drift, r_b=r_b))
         prev = (r, b_h)
         W_h *= 1 + benchmark_return(b_h, r)
 
+    # Theta = Q / T: curve part over the months behind Sigma, credit part over the months behind its covariance
     th_F, th_psi = theta_factor(loadings(np.nan_to_num(a0.K), fm), psi, fm.n_obs)
-    return Params(asof, cusips, sector, terms["asset_type"].to_numpy(), b, fm, c, th_F, th_psi,
+    if fm.credit_L is not None:
+        th_F = np.hstack([th_F, credit_exposures(D_spr0, group, fm) @ fm.credit_L / np.sqrt(fm.credit_n_obs)])
+    return Params(asof, cusips, sector, asset_type, b, fm, c, th_F, th_psi,
                   terms["stale"].to_numpy(bool), a0.spread_solved, n_obs, periods)

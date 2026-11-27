@@ -5,6 +5,8 @@ requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.15.0",
     "matplotlib>=3.11.2",
+    "cvxpy>=1.9.3",
+    "highspy>=1.16.0",
     "numpy",
     "pandas",
     "pyarrow>=26.0.1",
@@ -13,6 +15,7 @@ dependencies = [
     "scikit-learn",
     "seaborn>=0.13.2",
     "wrds==3.5.0",
+    "gurobipy>=14.0.0",
 ]
 
 [dependency-groups]

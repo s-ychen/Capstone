@@ -1,0 +1,33 @@
+# grid-search sandbox: uv run python -m src.backtest configs/sandbox.toml --sweep ...
+
+[inputs]
+asset_types = ["corporate", "treasury"]   # any subset of corporate, treasury, mbs
+g_annual    = 0.0025      # annualized active return goal over the benchmark
+start       = "2018-03"   # start month, snaps to its month-end
+T           = 1.75        # 21 rebalances, 2018-03-29 to 2019-11-29
+risk_tol    = "medium"    # low | medium | high
+k_max       = 150         # max bonds held
+W           = 1_000_000   # wealth in dollars, sets the minimum lot weights
+mode        = "tracking"  # tracking | return
+n_cand      = 750         # candidate set: n_cand largest eligible benchmark weights plus holdings
+
+# any Settings field (src/optimize/model.py), set after the presets and not scaled by the risk tolerance
+[overrides]
+H                  = 2
+method             = "heuristic"   # heuristic | misocp
+backend            = "gurobipy"
+tol_mode           = "relative"
+time_limit         = 5
+mip_gap            = 1e-2
+mip_focus          = 2
+mip_cand           = 150
+mip_skip_shortfall = true
+
+# build_inputs options (src/params/inputs.py); empty uses its defaults: ledoit_wolf, p 3, freq M, psi_n0 12
+[estimation]
+
+# tracking mode: each month aim for the rate that still reaches g, between floor and cap x g
+[catch_up]
+on    = true
+cap   = 2.0
+floor = 0.0

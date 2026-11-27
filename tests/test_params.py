@@ -8,6 +8,7 @@ from src.params import (build_cashflows, build_inputs, dense_Q, estimate_sigma, 
                         tracking_variance, analytics)
 from src.params.forecast import benchmark_return, eligibility_exits
 from src.params.krd import BP
+from src.params.residual import credit_factors, shrink_psi
 from data_cleaning.pull import pull_treasuries
 from data_cleaning.treasury_curve import clean_treasuries
 
@@ -89,6 +90,31 @@ def test_factor_form_matches_dense_Q():
 
 # synthetic: forecasts
 
+def test_credit_factor_recovers_common_spread_move():
+    rng = np.random.default_rng(0)
+    D = rng.uniform(1, 10, 200)
+    s = rng.normal(0, 1e-3, 12)
+    E = -np.outer(D, s) + rng.normal(0, 1e-5, (200, 12))
+    group = np.array(["fin"] * 100 + [None] * 100, dtype=object)
+    groups, S, U = credit_factors(E, D, group)
+    assert groups == ["fin"]
+    np.testing.assert_allclose(S[0], s, atol=1e-5)
+    assert np.abs(U[:100]).max() < 1e-4 and np.array_equal(U[100:], E[100:])
+
+
+def test_shrink_psi_pulls_toward_duration_prior():
+    rng = np.random.default_rng(1)
+    D = np.array([2.0, 4.0, 8.0, 4.0])
+    U = rng.normal(0, 1e-3, (4, 24)) * D[:, None]
+    U[3, :20] = np.nan                                  # too few returns: prior only
+    psi, n = shrink_psi(U, D, np.array(["a"] * 4), min_obs=6, n0=12)
+    assert (psi > 0).all() and n[3] == 4
+    k = np.median(np.nanvar(U[:3], axis=1, ddof=1) / D[:3] ** 2)
+    assert psi[3] == pytest.approx(k * 16)
+    s2 = np.var(U[0], ddof=1)
+    assert psi[0] == pytest.approx((24 * s2 + 12 * k * 4) / 36)
+
+
 def test_benchmark_forecast_and_drift():
     b = np.array([0.5, 0.3, 0.2])
     r = np.array([0.004, 0.003, 0.002])
@@ -142,7 +168,9 @@ def test_period_inputs_are_consistent(real):
     n = len(P.cusips)
     for q in P.periods:
         assert q.b_hat.sum() == pytest.approx(1) and (q.b_hat >= 0).all()
-        assert q.F.shape == (n, 3) and np.isfinite(q.F).all()
+        assert q.F.shape == (n, 3 + len(P.model.credit_groups)) and np.isfinite(q.F).all()
+        assert (q.D_spr[P.asset_type == "treasury"] == 0).all()
+        assert (q.F[P.asset_type == "treasury", 3:] == 0).all()
         assert np.isfinite([q.D, q.D_spr, q.C, q.mu_hat, q.ell]).all()
     assert P.periods[0].drift_gross is None and P.periods[1].drift_gross.shape == (n,)
     # aging shortens duration by roughly a month for the benchmark. Hold the h = 0 weights fixed and leave out the

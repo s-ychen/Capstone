@@ -11,8 +11,10 @@ MIN_YEARS_TO_MATURITY = 1.0     # index rule: bonds under one year to maturity l
 
 
 def step_date(as_of, h: int) -> pd.Timestamp:
-    """Month-end h months after as_of (as_of should itself be a month-end)."""
-    return pd.Timestamp(as_of) + pd.offsets.MonthEnd(h) if h else pd.Timestamp(as_of)
+    """Calendar month-end h months after as_of's month. as_of is often a business month-end (e.g. 2018-03-29), and
+    adding MonthEnd(h) to it directly lands on the same month's calendar end, a step of a day or two."""
+    t = pd.Timestamp(as_of)
+    return t + pd.offsets.MonthEnd(0) + pd.offsets.MonthEnd(h) if h else t
 
 
 def expected_returns(table: CashflowTable, start, params: np.ndarray, spread: np.ndarray) -> np.ndarray:

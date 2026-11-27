@@ -5,5 +5,9 @@ __pycache__/
 .DS_Store
 
 .env
+data/
 data/raw/
-data/processed/
+data/processed*/
+
+results/
+research_log/ 
