@@ -1,6 +1,6 @@
 """Disk cache of build_inputs per rebalance date (about 1 s a date with the shared ResidualPanel).
 
-The key covers everything Params depends on: asset types, H, W, the src/params source and the processed data files
+The key covers everything Params depends on: asset types, H, W, the estimation options, the src/params source and the processed data files
 (name, size, mtime). Change any of them and a fresh folder is used, so stale estimates are never read.
 """
 import hashlib
@@ -31,10 +31,13 @@ def _fingerprint() -> str:
 
 
 class ParamsCache:
-    """get(d) returns build_inputs(d, W, H, data_for(d)), from memory, then disk, else built and saved."""
+    """get(d) returns build_inputs(d, W, H, data_for(d), **estimation), from memory, then disk, else built and saved."""
 
-    def __init__(self, asset_types, H: int, W: float, root: Path | None = ROOT, resid=None):
-        self.key = dict(asset_types=list(asset_types), H=int(H), W=float(W), source=_fingerprint())
+    def __init__(self, asset_types, H: int, W: float, root: Path | None = ROOT, resid=None,
+                 estimation: dict | None = None):
+        self.estimation = dict(estimation or {})
+        self.key = dict(asset_types=list(asset_types), H=int(H), W=float(W), estimation=self.estimation,
+                        source=_fingerprint())
         digest = hashlib.sha256(json.dumps(self.key, sort_keys=True).encode()).hexdigest()[:12]
         self.dir = None if root is None else Path(root) / digest
         self.mem: dict = {}
@@ -50,7 +53,8 @@ class ParamsCache:
             P = pickle.loads(f.read_bytes())
         else:
             t = time.time()
-            P = build_inputs(d, self.key["W"], H=self.key["H"], data=data_fn(d), resid=self.resid)
+            P = build_inputs(d, self.key["W"], H=self.key["H"], data=data_fn(d), resid=self.resid,
+                             **self.estimation)
             self.built += 1
             log.info("params %s: %d bonds, %.0fs", d.date(), len(P.cusips), time.time() - t)
             if f is not None:

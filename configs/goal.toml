@@ -23,6 +23,9 @@ mip_focus          = 2
 mip_cand           = 150
 mip_skip_shortfall = true
 
+# build_inputs options (src/params/inputs.py); empty uses its defaults: ledoit_wolf, p 3, freq M, psi_n0 12
+[estimation]
+
 # tracking mode: each month aim for the rate that still reaches g, between floor and cap x g
 [catch_up]
 on    = true

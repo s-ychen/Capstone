@@ -75,6 +75,12 @@ Two loop inputs are not `Settings` fields. They are passed to `loop.run` directl
 | `n_cand` | 750 | candidate set size: the `n_cand` largest eligible benchmark weights plus current holdings ([03_model.md](03_model.md)) |
 | `[catch_up]` | `on=True, cap=2.0, floor=0.0` | goal catch-up ([04_rolling.md](04_rolling.md)) |
 
+`[estimation]` passes `build_inputs` options to every date: `sigma_method`, `p`, `freq`, `window`, `halflife`, `min_obs`, `credit`, `psi_n0` ([02_estimation.md](02_estimation.md)). Empty uses its defaults. They are part of the params cache key.
+
+## Sweeps
+
+`sweep` (or `--sweep` on the command line) takes RunConfig fields or dotted keys into a section, e.g. `--sweep risk_tol=low,high overrides.te_cap=0.0025,0.005 estimation.psi_n0=none,12`. Grid values the label does not show are appended to each run's tag. `configs/sandbox.toml` is the grid-search window: 21 rebalances from 2018-03-29 to 2019-11-29, g = 25 bp.
+
 ## All fields
 
 | group | field | default | meaning |

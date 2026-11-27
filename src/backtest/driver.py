@@ -3,7 +3,9 @@
     from src.backtest import RunConfig, run, sweep
     r = run(RunConfig(g_annual=0.005, start="2021-01", T=4))      # Run with frames and meta, saved under results/runs
     table = sweep(RunConfig(), dict(risk_tol=["low", "medium", "high"], mode=["tracking", "return"]))
+    table = sweep(RunConfig(), {"overrides.te_cap": [0.0025, 0.005], "estimation.sigma_method": ["sample", "ewma"]})
 """
+import json
 import logging
 from datetime import datetime
 from itertools import product
@@ -26,7 +28,7 @@ log = logging.getLogger(__name__)
 
 class Context:
     """Data shared by every run with the same asset types and horizon: loaded data, benchmark, cash flow table and
-    the params cache (one per H and W). Pass one to run() to reuse it across runs."""
+    the params cache (one per H, W and estimation options). Pass one to run() to reuse it across runs."""
 
     def __init__(self, cfg: RunConfig, cache_root=None):
         self.data = load_data()
@@ -53,11 +55,12 @@ class Context:
     def fits(self, cfg: RunConfig) -> bool:
         return (cfg.asset_types, cfg.start, cfg.T) == (self.asset_types, self.start, self.T)
 
-    def cache(self, H: int, W: float) -> ParamsCache:
-        if (H, W) not in self._caches:
+    def cache(self, H: int, W: float, estimation: dict | None = None) -> ParamsCache:
+        k = (H, W, json.dumps(estimation or {}, sort_keys=True))
+        if k not in self._caches:
             kw = {} if self.cache_root is None else {"root": self.cache_root}
-            self._caches[(H, W)] = ParamsCache(self.asset_types, H, W, resid=self.resid, **kw)
-        return self._caches[(H, W)]
+            self._caches[k] = ParamsCache(self.asset_types, H, W, resid=self.resid, estimation=estimation, **kw)
+        return self._caches[k]
 
     def data_for(self, d):
         return self.bench.data_for(self.data, d)
@@ -68,7 +71,7 @@ def run(cfg: RunConfig, ctx: Context | None = None, save: bool = True, root: Pat
     settings = cfg.settings()
     if ctx is None or not ctx.fits(cfg):
         ctx = Context(cfg)
-    cache = ctx.cache(settings.H, cfg.W)
+    cache = ctx.cache(settings.H, cfg.W, cfg.estimation)
     built0 = cache.built
     log.info("%s: %d rebalances %s .. %s, %s %s", cfg.label(), len(ctx.dates), ctx.dates[0].date(),
              ctx.dates[-1].date(), settings.backend, settings.method)
@@ -83,24 +86,34 @@ def run(cfg: RunConfig, ctx: Context | None = None, save: bool = True, root: Pat
     return r
 
 
-def sweep(cfg: RunConfig, grid: dict, save: bool = True) -> pd.DataFrame:
-    """Run cfg with every combination of grid (RunConfig field -> values). Infeasible combinations are skipped and
-    reported. Saved under results/sweeps/<time>/<label>/, with sweep.csv holding one summary row per run."""
-    root = RESULTS / "sweeps" / datetime.now().strftime("%Y-%m-%d_%H%M%S")
+def _tag(cfg: RunConfig, point: dict) -> str:
+    """Grid values the label does not already show, so every run of a sweep gets its own folder name."""
+    shown = {"mode", "risk_tol", "k_max", "g_annual"}
+    extra = "-".join(f"{k.rpartition('.')[2]}{v}" for k, v in point.items() if k not in shown)
+    return "-".join(t for t in (cfg.tag, extra) if t)
+
+
+def sweep(cfg: RunConfig, grid: dict, save: bool = True, name: str = "") -> pd.DataFrame:
+    """Run cfg with every combination of grid (RunConfig field, or dotted section key such as overrides.te_cap or
+    estimation.sigma_method -> values). Infeasible combinations are skipped and reported. Saved under
+    results/sweeps/<time>[_name]/<label>/, with sweep.csv holding one summary row per run."""
+    root = RESULTS / "sweeps" / "_".join(t for t in (datetime.now().strftime("%Y-%m-%d_%H%M%S"), name) if t)
     ctx, rows = None, []
     for vals in product(*grid.values()):
-        c = cfg.with_(**dict(zip(grid, vals)))
+        point = dict(zip(grid, vals))
+        c = cfg.with_(**point)
+        c = c.with_(tag=_tag(cfg, point))
         try:
             c.settings()
         except ValueError as e:
             log.warning("skip %s: %s", c.label(), e)
-            rows.append({**dict(zip(grid, vals)), "label": c.label(), "error": str(e)})
+            rows.append({**point, "label": c.label(), "error": str(e)})
             continue
         if ctx is None or not ctx.fits(c):
             ctx = Context(c)
         r = run(c, ctx, save=save, root=root)
-        rows.append({**dict(zip(grid, vals)), "label": c.label(), "path": str(r.path) if r.path else "",
-                     **r.summary})
+        rows.append({**point, "label": c.label(), "path": str(r.path) if r.path else "",
+                     "run_s": r.meta["run"]["seconds"], "params_built": r.meta["run"]["params_built"], **r.summary})
     table = pd.DataFrame(rows)
     if save:
         root.mkdir(parents=True, exist_ok=True)
