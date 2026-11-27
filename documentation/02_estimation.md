@@ -6,7 +6,7 @@
 P = build_inputs(asof, W, H=settings.H, data=data_for(asof))
 ```
 
-About 13 s per date for corporate + treasury in 2022, longer later in the sample (it refits residuals over the full history to `asof`).
+In a backtest, `Context` passes a shared `ResidualPanel` (`resid=`), which computes each month's residuals once, so a date takes under a second. A standalone call reprices every past month instead: about 5 s in 2019, 25 s in 2024 (corporate + treasury). Both give identical `Params`.
 
 | arg | default | meaning |
 |---|---|---|
