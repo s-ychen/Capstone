@@ -38,7 +38,8 @@ def candidates(P, hold: dict, k_max: int, H: int, n_cand: int):
 def goal_rate(g_m: float, n: int, k: int, active_growth: float, cap: float = 2.0, floor: float = 0.0) -> float:
     """Required monthly active return at rebalance k (0-based) of n, given cumulative active growth so far."""
     req = ((1 + g_m) ** n / active_growth) ** (1 / (n - k)) - 1
-    return float(np.clip(req, floor, cap * g_m))
+    lo, hi = min(floor, g_m), max(floor, cap * g_m)   # g_m < 0 would otherwise invert the bounds
+    return float(np.clip(req, lo, hi))
 
 
 def run(s: Settings, dates, ends, data, data_for, table, W: float, params: dict, n_cand: int,

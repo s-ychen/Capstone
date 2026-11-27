@@ -199,8 +199,10 @@ def solve_grb(P, S, x_init, s) -> Solution:
         return heur
 
     # MISOCP on the same model: restore bounds, add z, start from the stage 2 solution
-    allowed = support.copy()
-    if s.mip_cand is not None:
+    if s.mip_cand is None:
+        allowed = np.ones(m, bool)
+    else:
+        allowed = support.copy()
         allowed[np.argsort(-w)[: s.mip_cand]] = True
     starts = [(v.X.copy(), a.X.copy(), b.X.copy()) for v, a, b in zip(M.X, M.up, M.um)]
     for h in range(H):
