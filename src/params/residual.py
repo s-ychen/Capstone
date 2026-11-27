@@ -9,7 +9,7 @@ sample variance, sector median for bonds with fewer than min_obs returns.
 import numpy as np
 import pandas as pd
 
-from data_cleaning.curve import KEY_COLS
+from data_cleaning.treasury_curve import KEY_COLS
 
 from .krd import CashflowTable, analytics, build_cashflows, cash_between, nss_params
 

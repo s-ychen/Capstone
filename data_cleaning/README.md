@@ -1,87 +1,127 @@
+Process
+
+This folder has all the scripts that a) pull data b) process it c) make the necessary features for the model.
+
+```run_pipeline.py``` is the main script ran, with params --refresh, --skip-mbs, --skip-corporates
+```holdings.py``` is the script that gets the historical AGG portfolios from download url
+```treasury_curve.py``` is the script that takes the treasury data, cleans it, and fits a yield curve to it using NSS least squares (as we found this was a good way to fit the curve from literature)
+
+```merge.py```  builds the output tables (bond universe, holdings monthly, prices daily + monthly)
+Helpers:
+```pull.py``` is the actual WRDS calls
+```panels.py``` is more data engineering steps, to construct panels of data where each bond has columns for monthly/daily freq (so bond x date)
+```trace.py``` has the TRACE trade-level data cleaning. Note we do not use Bond-Dickerson for a multitude of reasons: it cuts off at January 2025, it does not process MBS trades and all the corporates in sources such as FISD. Since we are going to have to do the TRACE data processing anyways, we just take the data processing/trade filter techniques from the Dickerson website and do it ourselves on all the data.
+```bond_math.py``` is  helpers for feature engineering e.g if a data source doesn't report yield or accrued interest, we calculate it.
+```config.py``` is where all the common used params are stored. Make edits  here for stuff such as start date of the data pull and directory names.
+
 # data_cleaning
 
-Builds the daily bond dataset for the GoalPath-Bond model from WRDS, starting from the ideal universe in
-`data/AGG_holdings_clean.csv` (iShares AGG holdings). Everything is keyed on the 9-character CUSIP and the
-trading date.
+Builds the monthly bond dataset from WRDS, plus the daily Treasury curve. The ideal bond universe is AGG's actual monthly holdings, which we query in ```holdings.py```. We get the latest end of previous month portfolio holdings (last trading day), for our current month's model such that there is no forward leakage. ALl the bonds are keyed using the CUSIP9 code and month.
+
+Prices are saved twice: `prices_monthly` (****one row per bond per held month, the modelling table) and `prices_daily`
+(every observed bond-day in a held month, no filling). The yield curve is saved daily.
+
+Raw data is pulled for `config.START_DATE`-`END_DATE` (2016-01 to 2026-03, cached in `data/raw`), but output starts at
+`config.OUTPUT_START` (2017-08). BlackRock's holdings archive has no AGG files from 2017-01-03 to 2017-07-05, so
+Feb-Jul 2017 have no start-of-month portfolio. The earlier history still feeds carried prices, the MBS cohort index and
+the trade filters.
 
 ```sh
 uv run python -m data_cleaning.run_pipeline          # pulls from WRDS once, caches to data/raw, writes data/processed
 uv run python -m data_cleaning.run_pipeline --refresh # ignore the caches and re-pull
-uv run python -m data_cleaning.run_pipeline --download # fetch the latest holdings CSV from iShares (data/raw/ishares_AGG_holdings_<date>.csv) instead of the committed snapshot
-uv run python -m data_cleaning.validate               # sanity checks + comparison against Dickerson's cleaned prices
+uv run python -m data_cleaning.validate               # sanity checks
 ```
 
 WRDS login: `WRDS_USERNAME` in the repo `.env`, with the password in `~/.pgpass` (the `wrds` package offers to
-create it on the first interactive connection). The full run pulls ~55M TRACE trade rows and takes 15-30 minutes;
-later runs use the parquet caches in `data/raw/` (both `data/raw` and `data/processed` are gitignored).
+create it on the first interactive connection); WRDS also asks for a Duo approval every so often. The first run for
+2016-2026 downloads ~120 holdings files and pulls the TRACE history of ~22,000 bonds, a few hours; later runs use the
+caches in `data/raw/` and take about an hour, almost all of it trade-level TRACE cleaning (both `data/raw` and
+`data/processed` are gitignored). WRDS caches are keyed by date window *and* CUSIP set, and TRACE is pulled in 64
+fixed hash buckets, so extending the window or adding a month re-pulls only what changed. A run that finds
+everything cached does not connect to WRDS.
 
 ## Pipeline
 
-| step | module | what it does |
-|---|---|---|
-| 1 | `universe.py` | Parse the AGG file; keep Treasury, Industrial, Financial Institutions, Utility and MBS Pass-Through (sectors in `config.SECTOR_MAP`, ~94% of the fund). |
-| 2 | `treasuries.py` | CRSP daily Treasury quotes (`crsp.tfz_dly` x `tfz_iss`). Drops TIPS/callables, mid = (bid+ask)/2, dirty = mid + CRSP accrued, 8-char CRSP CUSIPs get their check digit. |
-| 3 | `curve.py` | Nelson-Siegel-Svensson zero curve fitted to **all** nominal Treasury dirty prices each day (duration-weighted, outliers down-weighted); zero yields read off at the 8 key-rate tenors. |
-| 4 | `corporates.py`, `trace_clean.py` | Enhanced TRACE trades for the AGG corporates, cleaned trade-by-trade (Dick-Nielsen cancels/corrections/reversals, inter-dealer duplicates, non-standard and long-settlement trades, Edwards-Harris-Piwowar median + reversal filters), collapsed to one row per bond-day. Terms from FISD (`fisd.fisd_mergedissue`), accrued interest from the coupon schedule (30/360). Dickerson's daily analytics (`contrib_bond_dickerson`) are merged in as `dk_*` columns where available. |
-| 4 | `mbs.py` | Same cleaning on TRACE SPDS enhanced pool trades (`trace_enhanced.trace_spds_mbs_enhanced`) and TBA trades (`..._tba_enhanced`). Pool quantities are converted to current face with the pool factor on file. |
-| 5 | `features.py` | Yield to maturity (semiannual) and the constant spread over the same-day zero curve, both solved from the dirty price and the bond's cash flows. |
-| 6 | `merge.py` | Bond universe with terms, coverage flags and renormalised weights; the stacked `prices_daily` table. |
 
-`config.py` holds the date window, sector map, conventions and table names. `wrds_pull.py` is the connection and
-cache layer; `finmath.py` the coupon-schedule / accrued / cash-flow maths.
+| step | module                         | what it does                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | `holdings.py`                  | For every month m, download AGG's holdings on the last trading day of m-1 from BlackRock's fund-document API (`config.AGG_HOLDINGS_API`, cached in `data/raw/agg_holdings/`); keep Treasury, Industrial, Financial Institutions, Utility and MBS Pass-Through (`config.SECTOR_MAP`, ~95% of bond value). The union of all months' bonds is what gets pulled from WRDS.                                                                  |
+| 2    | `pull.py`, `treasury_curve.py` | CRSP daily Treasury quotes (`crsp.tfz_dly` x `tfz_iss`). Drops TIPS/callables, mid = (bid+ask)/2, dirty = mid + CRSP accrued, 8-char CRSP CUSIPs get their check digit.                                                                                                                                                                                                                                                                 |
+| 3    | `treasury_curve.py`            | Nelson-Siegel-Svensson zero curve fitted to**all** nominal Treasury dirty prices each day (duration-weighted, outliers down-weighted); zero yields read off at the 8 key-rate tenors. **Saved daily.**                                                                                                                                                                                                                                  |
+| 4    | `trace.py`                     | Enhanced TRACE trades for the corporates, cleaned trade-by-trade (Dick-Nielsen cancels/corrections/reversals, inter-dealer duplicates, non-standard and long-settlement trades, Edwards-Harris-Piwowar median + reversal filters), collapsed to one row per bond-day in memory. Terms from FISD (`fisd.fisd_mergedissue`). |
+| 4    | `trace.py`                     | Same cleaning on TRACE SPDS enhanced pool trades (`trace_enhanced.trace_spds_mbs_enhanced`) and TBA trades (`..._tba_enhanced`). Pool quantities are converted to current face with the pool factor on file.                                                                                                                                                                                                                            |
+| 5    | `panels.py`                    | Treasuries and corporates: month-end price per held month (last observation, flagged by whether it fell in the final 5 trading days; carried forward if the bond did not trade), monthly bid-ask and volume, then accrued interest, dirty price, yield to maturity and spread over the zero curve (`bond_math.py`), solved only on these monthly rows.                                                                                  |
+| 5    | `panels.py`                    | The same for MBS, except months without a trade are filled from the pool's coupon cohort.                                                                                                                                                                                                                                                                                                                                               |
+| 6    | `merge.py`                     | Stacks the three panels into`prices_monthly` and the daily rows into `prices_daily`; bond terms and coverage per bond; monthly benchmark weights. Everything is cut to months from `OUTPUT_START`.                                                                                                                                                                                                                                      |
+
+`config.py` holds the date window, sector map, conventions and table names. `pull.py` is the WRDS connection, cache
+layer and every WRDS query; `bond_math.py` the coupon-schedule / accrued / cash-flow / yield-solving maths.
 
 ## Output tables (`data/processed/*.parquet`)
 
-**`bond_universe`** - one row per AGG bond in the modelled sectors (12,069 bonds, holdings as of 2026-10-12).
-AGG snapshot (`agg_market_value`, `agg_par_value`, `agg_duration`, `agg_ytm_pct`, ...), terms (`maturity_date`,
-`coupon_rate`, `coupon_frequency`, `day_count`, `dated_date`, `min_denomination`, `is_callable`, ...; `terms_source`
-says whether they came from CRSP, FISD or the AGG file), coverage (`has_prices`, `n_price_days`, `first/last_price_date`)
-and weights:
-- `agg_weight` = market-value share of the whole fund (recomputed; the file's own Weight column is rounded to 2 dp)
-- `model_weight` = `agg_weight` renormalised over bonds with at least one price, so it sums to 1 (this is b_t)
+**`agg_holdings_monthly`** - the benchmark, one row per (month, cusip) in AGG's start-of-month portfolio.
+`month` is the first day of the month the holdings apply to; `holdings_date` is the file's date (last trading day
+of the previous month). AGG `agg_market_value`, `agg_par_value` and:
 
-**`prices_daily`** - the master price table, one row per (cusip, date) **on days with an observation**: Treasuries
-have a quote every trading day, corporates/MBS only on days they traded. Nothing is forward-filled; month-end
-selection and stale-price carry-forward are left to the model code (see the Deliverable 3 step 5 rules).
+- `agg_weight` = market value / the fund's total bond market value on `holdings_date` (recomputed; the file's
+  Weight column is rounded to 2 dp). Sums to ~0.95 per month, the excluded sectors are the rest.
+- `price_status` = `observed` (quoted or traded that month), `filled` (no trade that month: an earlier price carried
+  forward, or an MBS cohort proxy) or `none`
+- `model_weight` = `agg_weight` renormalised over bonds with a month-end price (observed or filled), so it sums to 1
+  each month (b_t)
 
-| column | meaning |
-|---|---|
-| `asset_type`, `sector`, `source` | treasury / corporate / mbs; AGG sector; crsp / trace_enhanced / trace_mbs / trace_tba |
-| `clean_price` | per 100 face: CRSP bid-ask mid, or face-weighted average TRACE trade price |
-| `accrued_interest`, `dirty_price` | accrued **at the quote/trade date** (CRSP convention; Dickerson's `dk_accrued_interest` is at T+2 settlement). dirty = clean + accrued |
-| `yield` | reported: CRSP yield (annualised) or face-weighted TRACE `yld_pt`; NaN for MBS |
-| `ytm_solved` | semiannual yield solved from the dirty price and bullet cash flows (NaN for MBS) |
-| `spread_bps` | constant spread over the same-day fitted zero curve that reprices the dirty price (NaN for MBS and after the curve ends) |
-| `bid_ask_spread`, `bid_ask_spread_bps` | CRSP ask-bid; for TRACE, dealer-sell-to-customer VWAP minus dealer-buy-from-customer VWAP (NaN unless both sides traded that day) |
-| `par_volume`, `dollar_volume`, `trade_count` | face traded (current face for MBS pools), its dollar value, number of clean trades. NaN for CRSP quotes |
-| `years_to_maturity` | from the terms |
+**`bond_universe`** - one row per bond held in any month of the window (~16,000 for 2022-2026). When it was held
+(`first_held_month`, `last_held_month`, `months_held`), the AGG fields from the latest file it appears in
+(`snapshot_date`, `agg_market_value`, `agg_duration`, `agg_ytm_pct`, ...), terms (`maturity_date`, `coupon_rate`,
+`coupon_frequency`, `day_count`, `dated_date`, `min_denomination`, `is_callable`, ...; `terms_source` says whether
+they came from CRSP, FISD or the AGG file) and coverage while held (`has_prices`, `n_price_months`,
+`first/last_price_month`, counting observed months only).
 
-**`treasury_daily`**, **`corporate_daily`**, **`mbs_daily`** - the same rows with every source-specific column
-(CRSP duration/return/outstanding; TRACE low/high/bid/ask prices and the `dk_*` Dickerson analytics such as
-`dk_modified_duration`, `dk_convexity`, `dk_credit_spread`; MBS `pool_factor`, `is_tba`).
+**`prices_monthly`** - the master price table, one row per (cusip, month) for every month the bond was in AGG's
+start-of-month portfolio and has a price, from its first observation up to the last complete month of its source.
+
+
+| column                                                                | meaning                                                                                                                                                                                                                                                                                                                                        |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `month`, `month_end_date`                                             | first day of the month; its last trading day                                                                                                                                                                                                                                                                                                   |
+| `asset_type`, `sector`, `source`                                      | treasury / corporate / mbs; AGG sector; crsp / trace_enhanced / trace_mbs / trace_tba                                                                                                                                                                                                                                                          |
+| `price_source`, `is_stale`                                            | `traded_window` (last observation in the final 5 trading days: the month-end price), `traded_month` (earlier in the month), `carried` (no observation this month: last price carried forward) or `cohort_proxy` (MBS: moved with its coupon cohort). `is_stale` unless `traded_window`; exclude stale months when estimating residual variance |
+| `price_date`, `valuation_date`, `months_since_trade`                  | day the price was observed; day it is valued at (`price_date` if observed this month, else `month_end_date`); months since it last traded                                                                                                                                                                                                      |
+| `clean_price`                                                         | per 100 face: CRSP bid-ask mid, or face-weighted average TRACE trade price on`price_date`                                                                                                                                                                                                                                                      |
+| `accrued_interest`, `dirty_price`                                     | accrued at`valuation_date` (CRSP's own for quoted Treasuries; coupon schedule otherwise; 30/360 from the 1st for MBS). dirty = clean + accrued                                                                                                                                                                                                 |
+| `yield`                                                               | reported on`price_date`: CRSP yield (annualised) or face-weighted TRACE `yld_pt`; NaN when carried and for MBS                                                                                                                                                                                                                                 |
+| `ytm_solved`                                                          | semiannual yield solved from the dirty price and bullet cash flows (NaN for MBS)                                                                                                                                                                                                                                                               |
+| `spread_bps`                                                          | constant spread over the`valuation_date` zero curve that reprices the dirty price (NaN for MBS and after the curve ends)                                                                                                                                                                                                                       |
+| `years_to_maturity`                                                   | at`month_end_date`                                                                                                                                                                                                                                                                                                                             |
+| `bid_ask_spread`, `bid_ask_spread_bps`, `bid_ask_source`              | mean of the month's daily spreads: CRSP ask-bid, or for TRACE dealer-sell-to-customer VWAP minus dealer-buy-from-customer VWAP on days with both.`bid_ask_source` = observed / carried (bond's last observed month) / cohort (MBS) / missing                                                                                                   |
+| `par_volume`, `dollar_volume`, `trade_count`, `trade_days`            | month totals of face traded (current face for MBS pools), its dollar value, clean trades and days with a trade. 0 for CRSP quotes                                                                                                                                                                                                              |
+| `pool_factor`, `pool_factor_date`, `is_tba`, `cohort`, `cohort_index` | MBS only. The pool factor is only known on trade days and is carried forward, so current face is overstated for pools that stop trading                                                                                                                                                                                                        |
+
+**`prices_daily`** - one row per (cusip, date) with a CRSP quote or a clean TRACE trade, on trading days in months
+the bond was in AGG's start-of-month portfolio (~11.3M rows, ~680 MB). Nothing is filled: Treasuries appear every
+trading day, corporates and MBS only on days they traded. Columns as in `prices_monthly` (valued on `date`): `month`,
+`asset_type`, `sector`, `source`, `clean_price`, `accrued_interest`, `dirty_price`, `yield`, `ytm_solved`, `spread_bps`,
+`years_to_maturity`, `bid_ask_spread(_bps)`, `par_volume`, `dollar_volume`, `trade_count` (volumes 0 for CRSP
+quotes), `pool_factor`, `is_tba`. Unlike `prices_monthly` it runs to each source's last date, including the incomplete
+final month. The month-end traded rows of `prices_monthly` are the last daily row of the month.
 
 **`yield_curve_daily`** - one row per CRSP trading day: `zero_6m ... zero_30y` (decimal, continuously compounded),
 the NSS parameters and fit diagnostics. Its `date` column is also the trading calendar.
 
-**`trace_cleaning_log`** - trades remaining after each cleaning step, per product.
-
-**`mbs_monthly`** (from `uv run python -m data_cleaning.mbs_monthly`, built on `mbs_daily`) - a gap-free month-end
-panel for the MBS pools: last trade of the month as the price (`price_source` = `traded_window` if within the final
-5 trading days, else `traded_month`), months with no trade filled by moving the pool's last traded price with the
-median price change of its coupon cohort (`cohort_proxy`: same GNMA/conventional program, term and coupon; flat
-`carried` when no cohort traded). `is_stale` is True unless `traded_window`. Bid-ask spread is the month's observed
-mean, else the pool's last observed, else the cohort median (`bid_ask_source`). The pool factor is only known on
-trade days and is carried forward (`pool_factor_date`), so current face is overstated for pools that stop trading.
-An incomplete final month is dropped. On traded months held out as a test, the cohort proxy has a median error
-of 0.6 price points against 1.3 for a flat carry.
-
 ## Coverage and caveats
 
 - WRDS end dates differ by source (Nov 2026): CRSP Treasuries 2025-12-31, TRACE corporates 2026-03-17, TRACE MBS
-  pools 2025-03-17, TBAs 2025-01-29, Dickerson 2025-03-31. The curve (and `spread_bps`) therefore stops at 2025-12-31.
-- The universe is the Oct 2026 holdings file, so bonds issued after a source's end date have no history
-  (about 16% of AGG's Treasury market value is 2026 issues).
-- Coverage of the modelled sectors by AGG weight is printed by `validate.py`.
+  pools 2025-03-17, TBAs 2025-01-29. A source's last month is only built if its data reaches that month's final
+  5 trading days, so corporates end Feb 2026, MBS Feb 2025 and Treasuries Dec 2025. The curve (and `spread_bps`)
+  stops at 2025-12-31.
+- Months after a source's end still have holdings, so those bonds get `price_status` = `none` and `model_weight`
+  is spread over what is priced. Restrict a backtest to months where every asset type is priced (Aug 2017 to Feb
+  2025 with the current sources).
+- Coverage by year and asset type is printed by `validate.py`.
+- A bond added to AGG at the end of month m (new issue) only enters the panel in month m+1.
+- Rare TRACE prints on weekends or Good Friday are dropped when building month-end prices.
+- On MBS months held out as a test, the cohort proxy has a median error of 0.6 price points against 1.3 for a flat
+  carry.
 - Not covered: CMBS, ABS, sovereign, supranational, agency and local-authority holdings (~5% of AGG). Agency debentures
   are in `trace.trace_agency` with a different schema; the same cleaning could be pointed at it if ever needed.
 - Callable and fixed-to-float corporates (`coupon_type == "V"`) are priced to maturity with their current coupon.

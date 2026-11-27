@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from sklearn.covariance import LedoitWolf
 
-from data_cleaning.curve import KEY_COLS
+from data_cleaning.treasury_curve import KEY_COLS
 
 TRADING_DAYS_PER_MONTH = 21
 METHODS = ("sample", "ewma", "ledoit_wolf")

@@ -1,25 +1,29 @@
-"""Settings for the data pipeline. Edit here, not in the step modules."""
+"""Config file for data processing"""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
-RAW_DIR = DATA_DIR / "raw"              # cached WRDS pulls (gitignored)
-PROCESSED_DIR = DATA_DIR / "processed"  # pipeline outputs (gitignored)
-AGG_HOLDINGS_CSV = DATA_DIR / "AGG_holdings_clean.csv"   # committed snapshot; --download fetches the latest into data/raw
+RAW_DIR = DATA_DIR / "raw"              # cached WRDS pulls 
+PROCESSED_DIR = DATA_DIR / "processed"  # pipeline outputs
 
-# iShares fund page; the holdings CSV link is found by its link text (falls back to any href with "holdings" + "csv")
-AGG_URL = "https://www.ishares.com/us/products/239458/ishares-core-total-us-bond-market-etf"
-AGG_LINK_TEXT = r"detailed holdings and analytics|download latest fund holdings"
-HTTP_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; GoalPathBond data pipeline)"}
+# historical holdings of AGG
+AGG_HOLDINGS_API = ("https://www.blackrock.com/varnish-api/blk-one01-product-data/product-data/api/v1/get-fund-document"
+                    "?appType=PRODUCT_PAGE&appSubType=ISHARES&targetSite=us-ishares&locale=en_US&portfolioId=239458"
+                    "&userType=individual&asOfDate={date:%Y%m%d}&component=holdings")
+HOLDINGS_DIR = RAW_DIR / "agg_holdings"
 
-# Price history window (inclusive). Each source simply stops where WRDS stops; as of Nov 2026:
+# Price history window (inclusive). Each source stops where WRDS stops; as of Nov 2026:
 #   CRSP Treasury quotes        -> 2025-12-31   (so the zero curve, and spreads over it, end there)
 #   TRACE enhanced (corporates) -> 2026-03-17
 #   TRACE SPDS enhanced (MBS)   -> 2025-03-17, TBA table -> 2025-01-29
-#   Dickerson daily corporates  -> 2025-03-31
-START_DATE = "2022-01-01" # CHANGE HERE!!!! 
+START_DATE = "2016-01-01"   # pull window: WRDS caches in data/raw are keyed on it, so changing it re-pulls everything
 END_DATE = "2026-03-31"
 WINDOW_TAG = f"{START_DATE}_{END_DATE}"   # suffix on data/raw caches, so changing the window re-pulls
+
+# First month written to data/processed. Later than START_DATE so the earlier history still feeds carried prices,
+# the MBS cohort index and the trade filters, but is not output. BlackRock's holdings archive has no AGG files from
+# 2017-01-03 to 2017-07-05, so Feb-Jul 2017 have no start-of-month portfolio; output starts after that gap.
+OUTPUT_START = "2017-08-01"
 
 # iShares "Sector" label -> model sector. Sectors not listed are outside the universe
 # (CMBS, ABS, sovereign, supranational, agency, local authority: ~5% of AGG, no daily source we process).
@@ -46,5 +50,4 @@ FISD_ISSUES = "fisd.fisd_mergedissue"
 TRACE_CORP = "trace.trace_enhanced"
 TRACE_MBS = "trace_enhanced.trace_spds_mbs_enhanced"
 TRACE_TBA = "trace_enhanced.trace_spds_tba_enhanced"
-DICKERSON_DAILY = "contrib_bond_dickerson.dickerson_bonds_daily"
-TRACE_CHUNK_SIZE = 250          # CUSIPs per TRACE query (about 5M raw rows per chunk for liquid corporates)
+TRACE_BUCKETS = 64              # TRACE queries per product: ~200 corporates each, ~1.5M raw rows per year of history

@@ -9,6 +9,8 @@ from src.params import (build_cashflows, build_inputs, dense_Q, estimate_sigma, 
 from src.params.forecast import benchmark_return, eligibility_exits
 from src.params.krd import BP
 from src.params.residual import credit_factors, shrink_psi
+from data_cleaning.pull import pull_treasuries
+from data_cleaning.treasury_curve import clean_treasuries
 
 ASOF = pd.Timestamp("2025-06-30")
 FLAT = np.array([0.04, 0, 0, 0, 2.0, 10.0])      # NSS parameters of a flat 4% continuously compounded curve
@@ -143,7 +145,9 @@ def real():
 
 def test_treasury_duration_matches_crsp(real):
     data, P = real
-    t = pd.read_parquet(C.PROCESSED_DIR / "treasury_daily.parquet")
+    if not (C.RAW_DIR / f"crsp_treasuries_{C.WINDOW_TAG}.parquet").exists():
+        pytest.skip("no cached CRSP Treasury pull")
+    t = clean_treasuries(pull_treasuries())
     crsp = t[t["date"] == ASOF].set_index("cusip")["duration"]
     m = P.asset_type == "treasury"
     ours = pd.Series(P.periods[0].D[m], index=P.cusips[m])
@@ -169,6 +173,9 @@ def test_period_inputs_are_consistent(real):
         assert (q.F[P.asset_type == "treasury", 3:] == 0).all()
         assert np.isfinite([q.D, q.D_spr, q.C, q.mu_hat, q.ell]).all()
     assert P.periods[0].drift_gross is None and P.periods[1].drift_gross.shape == (n,)
-    # aging shortens duration by roughly a month for the benchmark
-    d0, d1 = (q.b_hat @ q.D for q in P.periods)
+    # aging shortens duration by roughly a month for the benchmark. Hold the h = 0 weights fixed and leave out the
+    # bonds that exit at h = 1 (under a year to maturity): dropping them moves weight to longer bonds and raises D
+    q0, q1 = P.periods
+    keep = ~q1.exits
+    d0, d1 = (np.average(q.D[keep], weights=q0.b_hat[keep]) for q in (q0, q1))
     assert 0 < d0 - d1 < 0.2

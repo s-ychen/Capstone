@@ -3,7 +3,8 @@
     uv run python -m src.params --asof 2025-06-30 --H 2
 
 Conventions: dates are month-ends, covariances and returns are monthly, durations are in years per decimal yield
-change, weights b are the AGG holdings (Oct 2026 file) renormalised over the bonds priced at the as-of date.
+change, weights b are AGG's holdings from the last file on or before the as-of date (agg_holdings_monthly),
+renormalised over the bonds priced at the as-of date.
 """
 import argparse
 import logging
@@ -14,6 +15,8 @@ from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
+
+from data_cleaning import config as C
 
 from .covariance import TRADING_DAYS_PER_MONTH, key_rate_changes
 from .factor_model import FactorModel, credit_exposures, fit_factor_model, loadings, theta_factor
@@ -31,12 +34,14 @@ class Data(NamedTuple):
     prices: pd.DataFrame
     curve: pd.DataFrame
     panel: pd.DataFrame     # month-end price panel
+    holdings: pd.DataFrame  # agg_holdings_monthly: AGG's portfolio for each month
 
 
 @lru_cache(maxsize=1)
 def load_data() -> Data:
     universe, prices, curve = load_processed()
-    return Data(universe, prices, curve, month_end_prices(prices, curve["date"]))
+    holdings = pd.read_parquet(C.PROCESSED_DIR / "agg_holdings_monthly.parquet")
+    return Data(universe, prices, curve, month_end_prices(prices, curve["date"]), holdings)
 
 
 @dataclass
@@ -103,13 +108,17 @@ def build_inputs(asof, W: float, H: int = 2, G: float | None = None, t_index: in
     panel and curve, reused across dates instead of repricing every past month (same result).
     """
     data = data or load_data()
-    universe, prices, curve, panel = data
+    universe, prices, curve, panel, holdings = data
     asof = _snap(curve, panel, asof)
     cv = curve_row(curve, asof)
     params = nss_params(cv)
 
     now = panel.xs(asof, level="month_end")
-    terms = universe.set_index("cusip").join(now[["dirty_price", "spread_bps", "stale"]], how="inner")
+    # benchmark: AGG's portfolio from the last holdings file on or before asof (no look-ahead). At a month-end that is
+    # the file dated asof itself, i.e. the portfolio AGG holds over the next month
+    bench = holdings[holdings["holdings_date"] == holdings.loc[holdings["holdings_date"] <= asof, "holdings_date"].max()]
+    terms = (universe.set_index("cusip").join(bench.set_index("cusip")["agg_weight"], how="inner")
+             .join(now[["dirty_price", "spread_bps", "stale"]], how="inner"))
     terms = terms[(terms["maturity_date"] > asof) & terms["coupon_rate"].notna()].reset_index()
     first_end = panel.index.get_level_values("month_end").min()
     earliest = pd.Timestamp(first_end) - pd.Timedelta(days=400)
