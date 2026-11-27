@@ -8,7 +8,7 @@ so new issues still get a value.
 import numpy as np
 import pandas as pd
 
-from data_cleaning.curve import KEY_COLS
+from data_cleaning.treasury_curve import KEY_COLS
 
 from .krd import CashflowTable, analytics, cash_between, nss_params
 

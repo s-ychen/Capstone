@@ -20,7 +20,7 @@ P = build_inputs(asof, W, H=2, G=None, t_index=0, N=None,
 | `p` | principal components kept (3) |
 | `freq`, `window` | monthly (`M`) or daily (`D`, scaled to monthly) curve changes, optional lookback in periods |
 
-Reads `data/processed/` only (bond_universe, prices_daily, yield_curve_daily). CLI summary: `uv run python -m src.params --asof 2025-06-30`.
+Reads `data/processed/` only (bond_universe, agg_holdings_monthly, prices_daily, yield_curve_daily). CLI summary: `uv run python -m src.params --asof 2025-06-30`.
 
 ## Output
 
@@ -28,7 +28,7 @@ Reads `data/processed/` only (bond_universe, prices_daily, yield_curve_daily). C
 
 | field | what | how |
 |---|---|---|
-| `b` | benchmark weights b_t | AGG weights renormalised over bonds priced at `asof` |
+| `b` | benchmark weights b_t | AGG weights from the last holdings file on or before `asof` (at a month-end, the file dated `asof`), renormalised over bonds priced at `asof` |
 | `model.Sigma`, `Gamma`, `Lambda` | 8x8 key-rate covariance, top-p eigenvectors and eigenvalues | month-end changes of the 8 fitted zero yields up to `asof`, then PCA |
 | `model.psi` | residual variance per bond | variance of (month-end return + K'dy); stale prices excluded; under 6 observations uses sector median |
 | `c` | proportional trading cost | half the last bid-ask spread (90 days), sector median fallback |
@@ -74,4 +74,4 @@ Next step is a function that takes `Params`, the current holdings and the user i
 - Spread duration equals duration (constant additive spread), so those two D3 constraints coincide. Use `dts` if a distinct spread-risk measure is wanted.
 - MBS: bullet approximation, duration far above AGG's, psi mostly the sector median.
 - Sigma comes from about 17 to 24 monthly observations, so it is noisy.
-- Universe is the Oct 2026 holdings, so no bond is under one year to maturity in the data and `exits` is empty.
+- AGG drops bonds under one year to maturity at each month-end, so `exits` is usually empty at h = 0.
