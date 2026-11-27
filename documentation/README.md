@@ -2,7 +2,7 @@
 
 GoalPath-Bond holds at most `k_max` bonds and tracks a benchmark: the iShares AGG holdings cut to the asset types the user picks (corporate, treasury, mbs). It aims for an annualized active return goal `g` within a risk tolerance. At each month-end it estimates a risk and return model from data up to that date, solves a multi-period optimization, trades the first period, and measures the realised return to the next month-end.
 
-The driver is `workbook/goal_optimizer.ipynb`. These documents follow it.
+The driver is `src/backtest` (`uv run python -m src.backtest configs/goal.toml`), a port of `workbook/goal_optimizer.ipynb`, which is kept for exploration. These documents follow it.
 
 ## Reading order
 
@@ -19,22 +19,22 @@ The driver is `workbook/goal_optimizer.ipynb`. These documents follow it.
 ```mermaid
 %%{init: {"flowchart": {"wrappingWidth": 1000}, "markdownAutoWrap": false, "themeCSS": ".node .label div, .node .nodeLabel, .node p { text-align: left !important; }"}}%%
 flowchart TD
-    UI["User inputs<br/>ASSET_TYPES, G_ANNUAL,<br/>START_DATE, T_YEARS,<br/>RISK_TOL, K_MAX, W, MODE"] --> ST["presets.make_settings<br/>Settings"]
+    UI["configs/goal.toml<br/>RunConfig: asset_types, g_annual,<br/>start, T, risk_tol, k_max, W, mode"] --> ST["presets.make_settings<br/>Settings"]
     UI --> HZ["presets.horizon_dates<br/>N = 12 T rebalance<br/>month-ends"]
 
     DP["data/processed<br/>(built by data_cleaning)"] --> LD["params.load_data<br/>universe, prices,<br/>curve, month-end panel"]
-    HM["agg_holdings_monthly"] --> BM["notebook data_for(d)<br/>benchmark weights b<br/>for month d"]
+    HM["agg_holdings_monthly"] --> BM["Benchmark.data_for(d)<br/>benchmark weights b<br/>for month d"]
 
     HZ --> LOOP{"next rebalance d"}
-    LOOP --> EST["params.build_inputs<br/>Params P: risk model,<br/>exposures, forecasts,<br/>costs, lots"]
+    LOOP --> EST["ParamsCache.get<br/>build_inputs, cached on disk<br/>Params P: risk model,<br/>exposures, forecasts,<br/>costs, lots"]
     LD --> EST
     BM --> EST
-    EST --> CAND["rolling.candidates<br/>candidate set S,<br/>holdings x_init"]
+    EST --> CAND["loop.candidates<br/>candidate set S,<br/>holdings x_init"]
     CAND --> SOLVE["solve_rebalance<br/>plan H periods"]
     ST --> SOLVE
-    SOLVE --> EXE["rolling.run<br/>trade period 0,<br/>pay costs, realised<br/>return to next month"]
+    SOLVE --> EXE["loop.run<br/>trade period 0,<br/>pay costs, realised<br/>return to next month"]
     EXE -->|"drifted holdings"| LOOP
-    EXE --> RES["results: one row<br/>per rebalance,<br/>summary vs g,<br/>sensitivity grid"]
+    EXE --> RES["results/runs/&lt;run&gt;<br/>run.json, monthly, holdings,<br/>sectors, risk"]
 ```
 
 ## Code map
@@ -52,8 +52,14 @@ flowchart TD
 | `src/optimize/presets.py` | user inputs to `Settings`, horizon checks |
 | `src/optimize/model.py` | `Settings`, `Solution`, `solve_rebalance`, tolerance bands, the cvxpy backend |
 | `src/optimize/grb.py` | gurobipy backend (primary) |
-| `src/optimize/rolling.py` | candidate set, goal catch-up, the monthly loop |
-| `src/optimize/backtest.py` | `realised_returns` and `exit_cost`, used by the loop |
+| `src/backtest/config.py` | `RunConfig`: user inputs, overrides, catch-up, read from TOML |
+| `src/backtest/benchmark.py` | monthly benchmark weights for the chosen asset types |
+| `src/backtest/cache.py` | `ParamsCache`: `build_inputs` per date, cached in `results/cache/params` |
+| `src/backtest/loop.py` | candidate set, goal catch-up, the monthly loop |
+| `src/backtest/accounting.py` | `realised_returns`, `exit_cost` |
+| `src/backtest/results.py` | summary, run folder save and load |
+| `src/backtest/driver.py` | `run(cfg)`, `sweep(cfg, grid)` |
+| `src/optimize/backtest.py`, `dashboard.py` | legacy train/val/test backtest (cvxpy, 2024-2025) |
 
 ## Conventions
 
@@ -76,7 +82,7 @@ Dates are month-ends. Returns and covariances are monthly and in decimals. Weigh
 | $c$ | `c` | one-way proportional trading cost |
 | $\ell_h$ | `ell` | minimum lot as a weight |
 | $E_h$ | `exits` | bonds that cannot be held in period $h$ |
-| $g$, $g_m$ | `G_ANNUAL`, `-ret_slack` | annual active goal, monthly goal $(1+g)^{1/12} - 1$ |
+| $g$, $g_m$ | `g_annual`, `-ret_slack` | annual active goal, monthly goal $(1+g)^{1/12} - 1$ |
 
 ## Status
 

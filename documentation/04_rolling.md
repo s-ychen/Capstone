@@ -1,13 +1,13 @@
 # Rolling loop
 
-`rolling.run(settings, REB, ends, data, data_for, table, W, PARAMS, N_CAND, CATCH_UP)` (`src/optimize/rolling.py`) runs one solve per rebalance month-end over the horizon and returns one row per rebalance. Notebook sections 6 to 8.
+`loop.run(settings, dates, ends, data, data_for, table, params, n_cand, catch_up)` (`src/backtest/loop.py`) runs one solve per rebalance month-end over the horizon and returns four frames (below). `driver.run(cfg)` builds its inputs from a `RunConfig` and saves the run.
 
 ## One month
 
 ```mermaid
 %%{init: {"flowchart": {"wrappingWidth": 1000}, "markdownAutoWrap": false, "themeCSS": ".node .label div, .node .nodeLabel, .node p { text-align: left !important; }"}}%%
 flowchart TD
-    D["rebalance d (k of N)"] --> CH{"PARAMS has (d, H)?"}
+    D["rebalance d (k of N)"] --> CH{"ParamsCache has d?"}
     CH -->|no| EST["build_inputs(d, W, H,<br/>data_for(d))"]
     CH -->|yes| P["Params P"]
     EST --> P
@@ -26,7 +26,7 @@ flowchart TD
 
 ## Steps
 
-1. Estimate. `build_inputs` at $d$ with the month's benchmark, cached in `PARAMS` by `(d, H)`. Re-running with a different risk tolerance, mode or `k_max` reuses it. The key does not include asset types, so clear `PARAMS` after changing `ASSET_TYPES`.
+1. Estimate. `build_inputs` at $d$ with the month's benchmark, through `ParamsCache` (memory, then `results/cache/params/<key>/<date>.pkl`). The key covers asset types, `H`, `W`, the `src/params` source and the processed data files, so re-running with another risk tolerance, mode or `k_max` reuses it, and any change that would alter `Params` builds afresh.
 2. Goal. Tracking mode with catch-up on: the monthly goal is reset (below). Otherwise $g_m$.
 3. Forced sales. Holdings whose cusip is not in `P.cusips` are sold at half their last bid-ask in the 90 days to $d$ (else their cost at the previous rebalance). This is `exit_cost`. The remaining holdings are rescaled to post-sale wealth and sum below 1, so the solve reinvests the cash and pays the buy cost on it.
 4. Solve from the drifted holdings (`candidates`, then `solve_rebalance`). Trade cost $\text{cost} = c_S^\top \lvert x_0 - x^{init} \rvert$.
@@ -48,27 +48,32 @@ Example, 3 months from 2022-01, $g$ = 50 bp/yr ($g_m$ = 4.16 bp): January earned
 
 ## Results
 
-One row per rebalance date:
+`driver.run(cfg)` saves each run to `results/runs/<yyyy-mm-dd_HHMMSS>_<label>/` (label e.g. `tracking-medium-k150-g50`). `load_run(path)` reads it back, `list_runs()` tabulates every saved run.
+
+| file | grain | contents |
+|---|---|---|
+| `run.json` | run | time, git commit and whether `src` was dirty, package versions, inputs, resolved `Settings`, horizon, params cache key, summary |
+| `monthly.parquet` | rebalance | columns below |
+| `holdings.parquet` | (date, cusip) | every bond held before or after the trade: `x_init`, `x`, `b`, realised `r`, `fallback`, `c`, `mu_hat`, `D`, sector, asset type |
+| `sectors.parquet` | (date, sector) | `w_port`, `w_bench`, gross return contributions `contrib_port` ($x_i r_i$), `contrib_bench` ($\hat b_i r_i$) |
+| `risk.parquet` | (date, factor) | ex-ante active variance per curve PC ($(F_{pc}^\top a)^2$), credit factor and residual sector ($\sum \psi_i a_i^2$), monthly |
+
+`monthly.parquet` columns:
 
 | column | meaning |
 |---|---|
-| `ret_port`, `ret_bench`, `active` | monthly net portfolio, benchmark and active return |
-| `cost`, `exit_cost` | total cost share of wealth, and the forced-sale part |
+| `ret_port`, `ret_gross`, `ret_bench`, `active` | monthly net and gross portfolio, benchmark and active return |
+| `growth_active` | cumulative $A$ after the month |
+| `cost`, `exit_cost`, `n_exits` | total cost share of wealth, the forced-sale part, bonds force-sold |
 | `turnover` | sum of buys, $\sum \max(0, x_0 - x^{init})$ (1.0 the first month) |
-| `n_hold`, `n_bonds` | bonds held, benchmark bonds in `P` |
+| `n_hold`, `n_cand`, `n_bonds` | bonds held, $\lvert S \rvert$, benchmark bonds in `P` |
+| `share_fallback` | share of benchmark bonds whose realised return fell back to $\hat\mu$ |
+| `active_share` | $\tfrac12 \sum \lvert a_i \rvert$ |
 | `te_fcst_ann`, `te_cap_ann` | ex-ante annualized TE, and the cap after widening |
-| `act_D` | active duration |
+| `port_D`, `bench_D`, `act_D`, `act_DTS`, `act_C`, `act_krd_<tenor>` | portfolio, benchmark and active exposures |
 | `goal_req`, `robust_active`, `shortfall` | goal this solve aimed for, $\rho_0$, shortfall against `goal_req` (monthly) |
 | `goal_dropped`, `mip_skipped`, `delta_scale`, `status`, `seconds` | solve diagnostics |
 
-Example rows (settings as in the 03_model example):
+`summary` in `run.json` (`results.summarize`): cumulative portfolio and benchmark returns, annualized active return $\left(\prod(1+r^{port}) / \prod(1+r^{bench})\right)^{12/N} - 1$ against $g$ and whether it was met, realised TE (annualized standard deviation of monthly active returns), information ratio, hit rate, maximum drawdown of $A$, average forecast TE against the cap, turnover (with and without the first month), cost, holdings, active share, shortfall, widened and MIP-skipped months, fallback share and solve time.
 
-| date | ret_port | ret_bench | active | cost | turnover | n_hold | te_fcst_ann | goal_req |
-|---|---|---|---|---|---|---|---|---|
-| 2022-01-31 | -1.042% | -1.170% | +12.8 bp | 1.5 bp | 1.000 | 150 | 17.7 bp | 4.16 bp |
-| 2022-02-28 | -2.634% | -2.759% | +12.5 bp | 0.2 bp | 0.144 | 150 | 16.4 bp | 0 |
-| 2022-03-31 | -4.239% | -3.956% | -28.3 bp | 0.6 bp | 0.100 | 150 | 15.7 bp | 0 |
-
-`summary(res)` in the notebook reports cumulative portfolio and benchmark returns, annualized active return $\left(\prod(1+r^{port}) / \prod(1+r^{bench})\right)^{12/N} - 1$ against $g$, realised TE (annualized standard deviation of monthly active returns) against the average forecast and the cap, turnover, cost, holdings, months with a shortfall, months with widened tolerances, months where the MIP was skipped, and solve time.
-
-Section 8 re-runs the loop for every risk tolerance and mode at the same inputs, reusing `PARAMS`. A combination whose goal fails the information ratio check (see [05_settings.md](05_settings.md)) is skipped with its message.
+`driver.sweep(cfg, grid)` (or `--sweep risk_tol=low,medium,high mode=tracking,return`) runs every combination, sharing the loaded data and params cache. A combination whose goal fails the information ratio check (see [05_settings.md](05_settings.md)) is skipped with its message. Runs go to `results/sweeps/<time>/<label>/`, with `sweep.csv` holding one summary row per run.

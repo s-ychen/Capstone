@@ -1,6 +1,6 @@
 # Estimation
 
-`src.params.build_inputs` computes every optimizer input for one rebalance date from data up to that date only. It does not optimize. The notebook calls it once per rebalance:
+`src.params.build_inputs` computes every optimizer input for one rebalance date from data up to that date only. It does not optimize. The loop calls it once per rebalance:
 
 ```python
 P = build_inputs(asof, W, H=settings.H, data=data_for(asof))
@@ -19,8 +19,8 @@ About 13 s per date for corporate + treasury in 2022, longer later in the sample
 | `credit` | True | one credit factor per corporate sector |
 | `psi_n0` | 12 | prior weight in months for `psi`; None gives the plain sample variance with a sector median fill |
 | `min_obs` | 6 | residual returns a bond needs for its own variance |
-| `data` | `load_data()` | the notebook passes `data_for(asof)`, with the benchmark in `agg_weight` |
-| `G`, `t_index`, `N` | None | terminal wealth goal for `r_req`. Unused by the notebook, which sets the goal through `Settings.ret_slack` |
+| `data` | `load_data()` | the loop passes `data_for(asof)`, with the benchmark in `agg_weight` |
+| `G`, `t_index`, `N` | None | terminal wealth goal for `r_req`. Unused by the loop, which sets the goal through `Settings.ret_slack` |
 
 ## Steps
 

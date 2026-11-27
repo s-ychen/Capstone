@@ -1,19 +1,19 @@
 # Settings
 
-The notebook's first input cell holds only what a user enters. `presets.make_settings` turns it into a `Settings` (`src/optimize/model.py`), and `OVERRIDES` can then set any field.
+`[inputs]` in `configs/goal.toml` holds only what a user enters (`RunConfig`, `src/backtest/config.py`). `presets.make_settings` turns it into a `Settings` (`src/optimize/model.py`), and `[overrides]` can then set any field.
 
 ```mermaid
 %%{init: {"flowchart": {"wrappingWidth": 1000}, "markdownAutoWrap": false, "themeCSS": ".node .label div, .node .nodeLabel, .node p { text-align: left !important; }"}}%%
 flowchart LR
-    G["G_ANNUAL"] --> RS["ret_slack =<br/>-((1 + g)^(1/12) - 1)"]
-    RT["RISK_TOL"] --> R["te_cap, eps2,<br/>tol_scale on deltas<br/>and tol_rel"]
-    MO["MODE"] --> MD["objective, gamma,<br/>goal_penalty,<br/>cost_weight"]
-    K["K_MAX"] --> KM["k_max"]
+    G["g_annual"] --> RS["ret_slack =<br/>-((1 + g)^(1/12) - 1)"]
+    RT["risk_tol"] --> R["te_cap, eps2,<br/>tol_scale on deltas<br/>and tol_rel"]
+    MO["mode"] --> MD["objective, gamma,<br/>goal_penalty,<br/>cost_weight"]
+    K["k_max"] --> KM["k_max"]
     RS --> S["Settings"]
     R --> S
     MD --> S
     KM --> S
-    OV["OVERRIDES"] -->|"set after presets,<br/>not scaled"| S
+    OV["[overrides]"] -->|"set after presets,<br/>not scaled"| S
     S --> CHK{"g at most<br/>IR_MAX x te_cap?"}
     CHK -->|no| ERR["ValueError:<br/>goal infeasible for<br/>this risk tolerance"]
 ```
@@ -22,13 +22,13 @@ flowchart LR
 
 | input | example | used for |
 |---|---|---|
-| `ASSET_TYPES` | `["corporate", "treasury"]` | benchmark sleeve, any subset of corporate, treasury, mbs |
-| `G_ANNUAL` | 0.0050 | annual active return goal over the benchmark |
-| `START_DATE`, `T_YEARS` | `"2022-01"`, 2 | first rebalance and $N = 12T$ monthly rebalances |
-| `RISK_TOL` | `"medium"` | low, medium, high |
-| `K_MAX` | 150 | maximum bonds held |
+| `asset_types` | `["corporate", "treasury"]` | benchmark sleeve, any subset of corporate, treasury, mbs |
+| `g_annual` | 0.0050 | annual active return goal over the benchmark |
+| `start`, `T` | `"2022-01"`, 2 | first rebalance and $N = 12T$ monthly rebalances |
+| `risk_tol` | `"medium"` | low, medium, high |
+| `k_max` | 150 | maximum bonds held |
 | `W` | 1,000,000 | wealth in dollars, sets minimum-lot weights |
-| `MODE` | `"tracking"` | tracking or return |
+| `mode` | `"tracking"` | tracking or return |
 
 ## Presets
 
@@ -55,7 +55,7 @@ Information ratio check: `make_settings` raises if $g >$ `IR_MAX` $\times$ `te_c
 
 `omega` defaults to $1/H$ per period unless overridden. All preset values are placeholders until calibration.
 
-## Notebook overrides
+## Default overrides
 
 | field | value | why |
 |---|---|---|
@@ -68,12 +68,12 @@ Information ratio check: `make_settings` raises if $g >$ `IR_MAX` $\times$ `te_c
 
 Overrides are taken as given: a tolerance set here is not scaled by the risk tolerance.
 
-The same cell sets two loop inputs that are not `Settings` fields. They are passed to `rolling.run` directly.
+Two loop inputs are not `Settings` fields. They are passed to `loop.run` directly.
 
 | input | value | meaning |
 |---|---|---|
-| `N_CAND` | 1000 | candidate set size: the `N_CAND` largest eligible benchmark weights plus current holdings ([03_model.md](03_model.md)) |
-| `CATCH_UP` | `on=True, cap=2.0, floor=0.0` | goal catch-up ([04_rolling.md](04_rolling.md)) |
+| `n_cand` | 750 | candidate set size: the `n_cand` largest eligible benchmark weights plus current holdings ([03_model.md](03_model.md)) |
+| `[catch_up]` | `on=True, cap=2.0, floor=0.0` | goal catch-up ([04_rolling.md](04_rolling.md)) |
 
 ## All fields
 
@@ -96,7 +96,7 @@ The same cell sets two loop inputs that are not `Settings` fields. They are pass
 | | `te_cap` | None | annual ex-ante TE cap, required in return mode |
 | estimation | `psi_floor` | False | lift `psi` to the sector median (off: estimation already shrinks it) |
 | path | `method` | heuristic | heuristic or misocp |
-| | `backend` | cvxpy | cvxpy or gurobipy (the notebook sets gurobipy) |
+| | `backend` | cvxpy | cvxpy or gurobipy (the default config sets gurobipy) |
 | | `solver`, `mip_solver` | CLARABEL, GUROBI | cvxpy backend solvers |
 | MIP | `mip_gap` | 1e-2 | relative gap at which Gurobi stops |
 | | `mip_focus` | 2 | Gurobi MIPFocus |

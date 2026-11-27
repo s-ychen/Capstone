@@ -78,16 +78,16 @@ Month-ends follow the curve calendar, so the panel ends 2025-12-31 although TRAC
 
 ## Usable window
 
-`presets.horizon_dates(ends, START_DATE, T_YEARS)` returns the first $N = 12T$ month-ends from the start month and the month-end after the last one (to measure its return). It checks:
+`presets.horizon_dates(ends, start, T)` returns the first $N = 12T$ month-ends from the start month and the month-end after the last one (to measure its return). It checks:
 
 - 7 month-ends of history before the start (6 monthly curve changes for `Sigma` and `psi`), so the earliest start is 2018-03.
 - a month-end after the last rebalance, so the last rebalance can be 2025-11.
 
-Example: `START_DATE = "2022-01"`, `T_YEARS = 2` gives 24 rebalances 2022-01-31 to 2023-12-29, last return measured to 2024-01-31.
+Example: `start = "2022-01"`, `T = 2` gives 24 rebalances 2022-01-31 to 2023-12-29, last return measured to 2024-01-31.
 
 ## Benchmark
 
-Done in the notebook (`benchmark_at`, `data_for`). For month $t$, keep the holdings of the selected asset types and set
+Done in `src/backtest/benchmark.py` (`Benchmark.weights_at`, `data_for`). For month $t$, keep the holdings of the selected asset types and set
 
 $$b_i = \frac{\text{agg\_market\_value}_i}{\sum_{j \in \text{selected}} \text{agg\_market\_value}_j}$$
 

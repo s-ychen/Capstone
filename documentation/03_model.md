@@ -57,7 +57,7 @@ $\rho_h$, the robust active return (`robust_active`), is the expected active ret
 
 ## Candidate set
 
-`rolling.candidates(P, hold, k_max, H, N_CAND, max_active_w)` cuts the $n$ bonds to $S$. Eligible bonds are not stale, not exiting at $h=0$, have a finite $\hat\mu$, and at every planning period have $\ell_i \le 0.5 / k_{max}$ and $\ell_i \le \hat b_i + \bar w$. $S$ is the `N_CAND` (1000) largest eligible benchmark weights plus every current holding. `x_init` is the current holdings on $S$ (zero at the first date, the portfolio starts in cash).
+`loop.candidates(P, hold, k_max, H, n_cand, max_active_w)` cuts the $n$ bonds to $S$. Eligible bonds are not stale, not exiting at $h=0$, have a finite $\hat\mu$, and at every planning period have $\ell_i \le 0.5 / k_{max}$ and $\ell_i \le \hat b_i + \bar w$. $S$ is the `n_cand` (750) largest eligible benchmark weights plus every current holding. `x_init` is the current holdings on $S$ (zero at the first date, the portfolio starts in cash).
 
 Tracking is still measured against the full benchmark. A bond outside $S$ has active weight $-\hat b_i$, which adds a constant to every norm.
 
@@ -97,13 +97,13 @@ $\omega_h$ = `omega` (default $1/H$ each), $\kappa$ = `cost_weight`, $\bar w$ = 
 `bands(q, settings)` gives the half-widths $\delta$ at each period.
 
 - `tol_mode = "flat"`: $\delta_D, \delta_K, \delta_{DTS}, \delta_C$ as set, the same for all 8 key rates.
-- `tol_mode = "relative"` (the notebook): $\delta = \max(\text{tol\_rel} \cdot \lvert \hat b_h^\top v \rvert,\ \text{floor})$ per exposure $v$ and per key rate, so the band is a share of the benchmark's own exposure. $\delta_D$ stays flat in both modes.
+- `tol_mode = "relative"` (the default config): $\delta = \max(\text{tol\_rel} \cdot \lvert \hat b_h^\top v \rvert,\ \text{floor})$ per exposure $v$ and per key rate, so the band is a share of the benchmark's own exposure. $\delta_D$ stays flat in both modes.
 
 Example at 2022-01-31, medium risk tolerance (tol_rel 0.10): benchmark 10y KRD 2.15 gives a band of $\pm 0.215$; 6m KRD 0.007 gives the floor $\pm 0.02$.
 
 ## Cardinality: two methods
 
-`method = "heuristic"` (the notebook): stage 1 solves the continuous relaxation without $z$ or $k_{max}$. Stage 2 keeps the $k_{max}$ bonds with the largest stage-1 weight over all periods (bonds exiting at any period excluded), fixes the rest to 0, lifts the kept ones to at least their minimum lot, and re-solves. Not guaranteed optimal.
+`method = "heuristic"` (the default config): stage 1 solves the continuous relaxation without $z$ or $k_{max}$. Stage 2 keeps the $k_{max}$ bonds with the largest stage-1 weight over all periods (bonds exiting at any period excluded), fixes the rest to 0, lifts the kept ones to at least their minimum lot, and re-solves. Not guaranteed optimal.
 
 `method = "misocp"`: after the heuristic, binaries $z$ are added and Gurobi solves the MISOCP with the heuristic as the MIP start. Binaries exist only for the heuristic's picks plus the `mip_cand` largest stage-1 weights; the rest are fixed to 0. Gurobi stops at `mip_gap` or `time_limit` and returns its best incumbent (status `user_limit` on the time limit). With `mip_skip_shortfall`, a month where the heuristic already misses a soft goal returns the heuristic.
 
@@ -137,7 +137,7 @@ Fallback ladder (`_ladder`), tried in order until feasible. Widening multiplies 
 
 | goal | steps |
 |---|---|
-| soft (tracking with `goal_penalty`, the notebook) or return mode | $\sigma$ = 1, 2, 4, 8 |
+| soft (tracking with `goal_penalty`, the default config) or return mode | $\sigma$ = 1, 2, 4, 8 |
 | hard | keep goal at 1, drop goal at 1, then $\sigma$ = 2, 4, 8 with the goal dropped |
 
 Stage 2 starts its ladder where stage 1 ended. The scale used is reported as `delta_scale`, a dropped goal as `return_goal_dropped`.
