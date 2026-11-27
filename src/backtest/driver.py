@@ -12,6 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.params import build_cashflows, load_data
+from src.params.residual import ResidualPanel
 from src.optimize.presets import horizon_dates
 
 from . import loop
@@ -39,6 +40,15 @@ class Context:
             .reset_index(drop=True), self.dates[0] - pd.Timedelta(days=400))
         self.cache_root = cache_root
         self._caches: dict = {}
+        self._resid = None
+
+    @property
+    def resid(self) -> ResidualPanel:
+        """Residuals of every bond of these asset types, built on first use and shared by all caches."""
+        if self._resid is None:
+            u = self.data.universe
+            self._resid = ResidualPanel(u[u.asset_type.isin(self.asset_types)], self.data.panel, self.data.curve)
+        return self._resid
 
     def fits(self, cfg: RunConfig) -> bool:
         return (cfg.asset_types, cfg.start, cfg.T) == (self.asset_types, self.start, self.T)
@@ -46,7 +56,7 @@ class Context:
     def cache(self, H: int, W: float) -> ParamsCache:
         if (H, W) not in self._caches:
             kw = {} if self.cache_root is None else {"root": self.cache_root}
-            self._caches[(H, W)] = ParamsCache(self.asset_types, H, W, **kw)
+            self._caches[(H, W)] = ParamsCache(self.asset_types, H, W, resid=self.resid, **kw)
         return self._caches[(H, W)]
 
     def data_for(self, d):

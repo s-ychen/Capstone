@@ -21,7 +21,7 @@ from .forecast import (benchmark_return, eligibility_exits, expected_returns, fo
 from .frictions import min_lot_weight, required_return, trading_cost
 from .krd import BP, analytics, build_cashflows, nss_params
 from .prices import curve_row, load_processed, month_end_prices
-from .residual import credit_factors, estimate_psi, residual_returns, shrink_psi
+from .residual import ResidualPanel, credit_factors, estimate_psi, residual_returns, shrink_psi
 
 log = logging.getLogger(__name__)
 
@@ -92,14 +92,15 @@ def _snap(curve: pd.DataFrame, panel: pd.DataFrame, asof) -> pd.Timestamp:
 def build_inputs(asof, W: float, H: int = 2, G: float | None = None, t_index: int = 0, N: int | None = None,
                  sigma_method: str = "ledoit_wolf", p: int = 3, freq: str = "M", window: int | None = None,
                  halflife: float = 12, min_obs: int = 6, credit: bool = True, psi_n0: float | None = 12,
-                 data: Data | None = None) -> Params:
+                 data: Data | None = None, resid: ResidualPanel | None = None) -> Params:
     """Estimate Q_t (factor form), K, D, D_spr, C, mu_hat, b_hat, exits, c, lots, r_req and Theta at `asof`.
 
     W: current wealth W_t in dollars (sets the minimum-lot weights). G: terminal wealth goal (see frictions.terminal_goal); with t_index (months elapsed) and
     N (total rebalances) it gives r_req, otherwise r_req is NaN. window limits the months behind Sigma and psi.
     credit: one credit factor per corporate sector in F (residual.credit_factors), removed from the residuals before
     psi. psi_n0: weight in months of the duration-scaled sector prior in psi (residual.shrink_psi); None gives the
-    plain sample variance with a sector median fill (residual.estimate_psi).
+    plain sample variance with a sector median fill (residual.estimate_psi). resid: a ResidualPanel over the same
+    panel and curve, reused across dates instead of repricing every past month (same result).
     """
     data = data or load_data()
     universe, prices, curve, panel = data
@@ -133,8 +134,11 @@ def build_inputs(asof, W: float, H: int = 2, G: float | None = None, t_index: in
     D_spr0 = np.where(no_spread, 0.0, np.nan_to_num(a0.D_spr))
 
     # Q_t: key-rate covariance from curve changes up to asof, residual variance from month-end returns
-    sub = panel[panel.index.get_level_values("cusip").isin(cusips)]
-    E, _ = residual_returns(table, sub, curve, asof, window)
+    if resid is not None and resid.covers(cusips):
+        E = resid.get(cusips, asof, window)
+    else:
+        sub = panel[panel.index.get_level_values("cusip").isin(cusips)]
+        E, _ = residual_returns(table, sub, curve, asof, window)
     groups, S_cr, U = credit_factors(E, D_spr0, group)
     if psi_n0 is None:
         psi, n_obs = estimate_psi(U, sector, min_obs)

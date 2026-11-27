@@ -11,7 +11,7 @@ import pandas as pd
 
 from data_cleaning.curve import KEY_COLS
 
-from .krd import CashflowTable, analytics, cash_between, nss_params
+from .krd import CashflowTable, analytics, build_cashflows, cash_between, nss_params
 
 
 def residual_returns(table: CashflowTable, panel: pd.DataFrame, curve: pd.DataFrame, as_of,
@@ -20,28 +20,86 @@ def residual_returns(table: CashflowTable, panel: pd.DataFrame, curve: pd.DataFr
 
     panel is the month-end panel; only month-ends up to as_of are used.
     """
-    cusips = table.cusips
-    dates = panel.index.get_level_values("month_end").unique().sort_values()
+    dates = _month_ends(panel)
     dates = dates[dates <= pd.Timestamp(as_of)]
     if window:
         dates = dates[-(window + 1):]
+    dirty, spread, stale = _wide(panel, table.cusips, dates)
+    cv = curve.set_index("date").loc[dates]
+    E = np.full((len(table.cusips), len(dates) - 1), np.nan)
+    for k in range(1, len(dates)):
+        E[:, k - 1] = _residual(table, dates[k - 1], dates[k], cv.iloc[k - 1], cv.iloc[k], dirty[:, k - 1:k + 1],
+                                spread[:, k - 1], stale[:, k - 1:k + 1])
+    return E, dates[1:]
+
+
+def _month_ends(panel: pd.DataFrame) -> pd.DatetimeIndex:
+    return panel.index.get_level_values("month_end").unique().sort_values()
+
+
+def _wide(panel: pd.DataFrame, cusips, dates):
+    """(dirty, spread_bps, stale) as cusips x dates arrays; a missing month counts as stale."""
     wide = {c: panel[c].unstack("month_end").reindex(index=cusips, columns=dates)
             for c in ("dirty_price", "spread_bps", "stale")}
-    dirty = wide["dirty_price"].to_numpy(float)
-    spread = wide["spread_bps"].to_numpy(float)
-    stale = (wide["stale"] != False).to_numpy(bool)  # noqa: E712  (missing counts as stale)
-    cv = curve.set_index("date").loc[dates]
-    y = cv[KEY_COLS].to_numpy(float)
+    return (wide["dirty_price"].to_numpy(float), wide["spread_bps"].to_numpy(float),
+            (wide["stale"] != False).to_numpy(bool))  # noqa: E712
 
-    E = np.full((len(cusips), len(dates) - 1), np.nan)
-    for k in range(1, len(dates)):
-        a = analytics(table, dates[k - 1], nss_params(cv.iloc[k - 1]), spread[:, k - 1], dirty[:, k - 1])
-        with np.errstate(divide="ignore", invalid="ignore"):
-            r = (dirty[:, k] + cash_between(table, dates[k - 1], dates[k]) - dirty[:, k - 1]) / dirty[:, k - 1]
-        e = r + a.K @ (y[k] - y[k - 1])
-        ok = ~stale[:, k] & ~stale[:, k - 1] & np.isfinite(e)
-        E[ok, k - 1] = e[ok]
-    return E, dates[1:]
+
+def _residual(table, d0, d1, cv0, cv1, dirty, spread0, stale) -> np.ndarray:
+    """Residual of every bond over (d0, d1], NaN where invalid. dirty and stale are n x 2 (d0, d1)."""
+    a = analytics(table, d0, nss_params(cv0), spread0, dirty[:, 0])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        r = (dirty[:, 1] + cash_between(table, d0, d1) - dirty[:, 0]) / dirty[:, 0]
+    e = r + a.K @ (cv1[KEY_COLS].to_numpy(float) - cv0[KEY_COLS].to_numpy(float))
+    return np.where(~stale[:, 1] & ~stale[:, 0] & np.isfinite(e), e, np.nan)
+
+
+def _subset(table: CashflowTable, rows: np.ndarray) -> CashflowTable:
+    """The bonds where rows is True, cash flows kept in order."""
+    m = rows[table.idx]
+    remap = np.cumsum(rows) - 1
+    return CashflowTable(table.cusips[rows], remap[table.idx[m]], table.date[m], table.coupon[m], table.principal[m])
+
+
+class ResidualPanel:
+    """Residuals of a fixed bond set, each month computed once and reused across as-of dates.
+
+    A month's residual depends only on its two month-ends, so residual_returns at any as-of date is a row and column
+    slice of this panel. Columns are filled lazily up to the latest as-of asked for. terms: cusip, maturity_date,
+    coupon_rate, coupon_frequency (rows without maturity or coupon are dropped).
+    """
+
+    def __init__(self, terms: pd.DataFrame, panel: pd.DataFrame, curve: pd.DataFrame):
+        terms = terms[terms["maturity_date"].notna() & terms["coupon_rate"].notna()].reset_index(drop=True)
+        self.dates = _month_ends(panel)
+        # same earliest as build_inputs, so every bond has its cash flows from the first month-end on
+        self.table = build_cashflows(terms, self.dates.min() - pd.Timedelta(days=400))
+        self.pos = pd.Index(self.table.cusips)
+        self.dirty, self.spread, self.stale = _wide(panel, self.table.cusips, self.dates)
+        self.curve = curve.set_index("date")
+        self.cols: list[np.ndarray] = []
+
+    def covers(self, cusips) -> bool:
+        return bool(self.pos.get_indexer(cusips).min(initial=0) >= 0)
+
+    def get(self, cusips, as_of, window: int | None = None) -> np.ndarray:
+        """residual_returns(table of cusips, panel, curve, as_of, window)[0]."""
+        n = int((self.dates <= pd.Timestamp(as_of)).sum())
+        for k in range(len(self.cols) + 1, n):
+            d0, d1 = self.dates[k - 1], self.dates[k]
+            live = ~self.stale[:, k - 1] & ~self.stale[:, k]    # every other row is NaN anyway
+            col = np.full(len(live), np.nan)
+            col[live] = _residual(_subset(self.table, live), d0, d1, self.curve.loc[d0], self.curve.loc[d1],
+                                  self.dirty[live, k - 1:k + 1], self.spread[live, k - 1],
+                                  self.stale[live, k - 1:k + 1])
+            self.cols.append(col)
+        lo = max(0, n - 1 - window) if window else 0
+        rows = self.pos.get_indexer(cusips)
+        if (rows < 0).any():
+            raise KeyError(f"{(rows < 0).sum()} cusips not in the residual panel")
+        if n - 1 <= lo:
+            return np.full((len(rows), 0), np.nan)
+        return np.column_stack(self.cols[lo:n - 1])[rows]
 
 
 def estimate_psi(E: np.ndarray, sector: np.ndarray, min_obs: int = 6) -> tuple[np.ndarray, np.ndarray]:
