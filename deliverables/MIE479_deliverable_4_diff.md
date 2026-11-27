@@ -87,7 +87,7 @@ $$\min \sum_{h=0}^{H-1} \Big[\, -\omega_h \rho_h + \gamma\, \omega_h V_h + \kapp
 | exits | $x_{h,i} = 0$ under one year to maturity |
 | cardinality, min lot | $\ell_{h,i} z_{h,i} \le x_{h,i} \le z_{h,i}$, $\sum_i z_{h,i} \le k_{max}$ |
 
-**Bands relative to the benchmark.** Instead of tuning a scalar band per exposure, each band is a share of the benchmark's own exposure, with a floor: $\delta = \max(\text{tol\_rel} \cdot \lvert \hat b_h^\top v \rvert,\ \text{floor})$. Risk tolerance scales `tol_rel` (only $\delta_D$ stays flat). Example: a benchmark 10y KRD of 2.15 gives a band of $\pm 0.215$ at medium.
+**Bands relative to the benchmark.** Instead of tuning a scalar band per exposure, each band is a share of the benchmark's own exposure, with a floor: $\delta = \max(\mathrm{tol}_{rel} \cdot \lvert \hat b_h^\top v \rvert,\ \text{floor})$. Risk tolerance scales `tol_rel` (only $\delta_D$ stays flat). Example: a benchmark 10y KRD of 2.15 gives a band of $\pm 0.215$ at medium.
 
 **Spread exposure.** Under a constant additive spread, `D_spr` equals `D` for spread products, so the spread-duration constraint in D3 is replaced by DTS.
 
@@ -95,7 +95,7 @@ $$\min \sum_{h=0}^{H-1} \Big[\, -\omega_h \rho_h + \gamma\, \omega_h V_h + \kapp
 
 **Goal check.** Before running, we check that the return goal isn't too large for the risk the user allows. We cap the information ratio (active return over tracking error) the goal implies at 1. So if the user allows 100 bp of tracking error, we treat 100 bp/yr of active return as the most they can ask for:
 
-$$g \le \text{IR\_MAX} \cdot \text{te\_cap}, \qquad \text{IR\_MAX} = 1$$
+$$g \le \mathrm{IR}_{max} \cdot \mathrm{TE}_{cap}, \qquad \mathrm{IR}_{max} = 1$$
 
 A goal above this is rejected with a message to lower the goal or raise the risk tolerance. Medium (50 bp cap) allows at most 50 bp/yr. This is a rough bound, not an exact feasibility test: the optimizer's goal uses expected returns, and the realized IR can come out higher (1.30 in the backtest below). It mainly stops the user from pairing a large goal with a tight risk tolerance.
 
@@ -111,7 +111,7 @@ We don't forecast curve moves, new issues, defaults, downgrades or MBS prepaymen
 
 $g$ is a goal over the whole horizon. In tracking mode, each month asks for the rate that still reaches it from the cumulative active growth $A$ so far:
 
-$$g_{req} = \operatorname{clip}\!\left( \left( \frac{(1 + g_m)^N}{A} \right)^{1/(N - k)} - 1,\ 0,\ 2 g_m \right)$$
+$$g_{req} = \mathrm{clip}\!\left( \left( \frac{(1 + g_m)^N}{A} \right)^{1/(N - k)} - 1,\ 0,\ 2 g_m \right)$$
 
 If the portfolio is ahead, the goal can fall to 0, so it just tracks the benchmark and keeps the gain. If it's behind, the goal rises, but we cap it at twice the original monthly goal so it stays within what the risk limits allow. Catch-up can be turned off (`[catch_up]`).
 
