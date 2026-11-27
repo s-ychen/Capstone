@@ -1,5 +1,8 @@
-"""Stack the per-source panels into the output tables: prices_monthly, prices_daily, bond_universe and
-agg_holdings_monthly (saved by run_pipeline to data/processed/)."""
+"""
+make the final saved tables in data/processed
+we have prices_daily, prices_monthly, bond_universe and agg_holdings_monthly
+since we have the data panels (bond x month) from panels.py, we just standardize their shapes and merge them into these 4 from all the sources
+"""
 import logging
 
 import numpy as np
@@ -19,13 +22,12 @@ MONTHLY_COLS = ["cusip", "month", "month_end_date", "asset_type", "sector", "sou
 
 def build_bond_universe(universe, corp_terms, tsy, prices):
     """One row per bond held by AGG in any month of the window: the AGG fields from the latest holdings file it
-    appears in (snapshot_date), when it was held, bond terms (CRSP / FISD / AGG file) and how many held months have
-    an observed price (prices_monthly rows with price_source traded_window / traded_month).
-    Time-varying benchmark weights are in agg_holdings_monthly, not here."""
+    appears in (snapshot_date), when it was held, bond terms (from the various data files) and how many held months have
+    an observed price (prices_monthly rows with price_source traded_window / traded_month). Time-varying benchmark weights are in agg_holdings_monthly, not here."""
     u = universe.rename(columns={"holdings_asof_date": "snapshot_date"}).copy()
     for c in ["first_held_month", "last_held_month"]:
         u[c] = u[c].dt.to_timestamp()
-
+    # clean for the treasuries and corps
     t = tsy.drop_duplicates("cusip").set_index("cusip")
     ct = corp_terms.set_index("cusip")
     is_t, is_c = u["asset_type"] == "treasury", u["asset_type"] == "corporate"
@@ -87,7 +89,7 @@ def build_holdings_monthly(membership, prices):
 
 
 def build_prices_monthly(panels, universe):
-    """Stack the per-asset-type month-end panels (panels.carry_panel + value, panels.build_mbs_monthly) on MONTHLY_COLS."""
+    """Stack the per-asset-type month-end panels (panels.carry_panel + value, panels.build_mbs_monthly) on MONTHLY_COLS"""
     sec = universe.set_index("cusip")["sector"]
     frames = []
     for asset_type, d in panels.items():

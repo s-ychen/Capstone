@@ -1,14 +1,8 @@
 """
-Everything that talks to WRDS: the connection, the parquet cache in data/raw, and the queries for each source.
+Connect to WRDS module, then pull data and cache it in data/raw/
+TRACE is pulled in C.TRACE_BUCKETS fixed hash buckets of CUSIPs, so adding a month of holdings only re-pulls the buckets whose bonds changed.
+We pull Treasury data from CRSP, corporate term bonds from FISD, and otehr corporate/mbs data from TRACE
 
-Each pull is cached as data/raw/<name>_<START_DATE>_<END_DATE>[_<cusip hash>].parquet, so WRDS is only hit the first
-time. The cache name includes the date window and a hash of the CUSIPs the query was filtered on, so a changed window
-or universe never silently reuses an old pull. TRACE is pulled in C.TRACE_BUCKETS fixed hash buckets of CUSIPs, so
-adding a month of holdings only re-pulls the buckets whose bonds changed.
-
-  pull_treasuries   CRSP daily Treasury quotes (all Treasuries: the curve needs them all)
-  pull_fisd_terms   FISD bond terms for the corporates
-  pull_trace        raw trade-level TRACE (corporate, MBS pool or TBA table), one cached frame per bucket
 """
 import hashlib
 import logging
@@ -69,7 +63,7 @@ def connect():
     """Open the WRDS connection once (only when something actually has to be pulled). 
     WRDS_USERNAME comes from the repo .env; the password from ~/.pgpass.
     sometimes it sends a Duo push still so have ur phone ready 
-    TODO: add some log that senses if the code is stalled waiting for the push """
+    TODO: add some log that senses if the code is stalled waiting for the push from ur phone"""
     global _db
     if _db is None:
         import wrds
@@ -80,13 +74,16 @@ def connect():
 
 def sql(query, params=None, date_cols=None):
     db = connect()
-    db.connection.rollback()                 # clears an aborted transaction left by a failed query
+    # if a query failed you need to rollback to clear the db connection query query
+    db.connection.rollback()                
     return db.raw_sql(query, params=params, date_cols=date_cols)
 
 
 def cached(name, pull, refresh=False, cusips=None):
-    """Return data/raw/<name>_<window>[_<cusip hash>].parquet, or run pull() and save it. refresh=True re-pulls.
-    Pass the CUSIPs a query is filtered on, so a changed universe never silently reuses an old pull."""
+    """
+    If data isnt cached in raw/ yet, we pull it. if it is we just return from the folder. The refresh parameter just makes you re-pull everytime 
+    """
+    # pass the cusips that a query was filtered on, so if the universe changes we don't reuse the old pull with old cusips
     suffix = f"_{hashlib.md5(','.join(sorted(cusips)).encode()).hexdigest()[:10]}" if cusips is not None else ""
     path = C.RAW_DIR / f"{name}_{C.WINDOW_TAG}{suffix}.parquet"
     if path.exists() and not refresh:
@@ -110,7 +107,7 @@ def buckets(cusips, n):
 
 
 def pull_treasuries(refresh=False):
-    """All CRSP daily Treasury quotes in [START_DATE, END_DATE]."""
+    """All CRSP daily Treasury quotes in [START_DATE, END_DATE]"""
     return cached("crsp_treasuries", lambda: sql(CRSP_QUERY, {"start": C.START_DATE, "end": C.END_DATE},
                                                  date_cols=["date", "dated_date", "maturity_date"]), refresh)
 

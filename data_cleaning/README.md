@@ -3,26 +3,34 @@ Process
 This folder has all the scripts that a) pull data b) process it c) make the necessary features for the model.
 
 ```run_pipeline.py``` is the main script ran, with params --refresh, --skip-mbs, --skip-corporates
+
 ```holdings.py``` is the script that gets the historical AGG portfolios from download url
+
 ```treasury_curve.py``` is the script that takes the treasury data, cleans it, and fits a yield curve to it using NSS least squares (as we found this was a good way to fit the curve from literature)
 
 ```merge.py```  builds the output tables (bond universe, holdings monthly, prices daily + monthly)
+
 Helpers:
+
 ```pull.py``` is the actual WRDS calls
+
 ```panels.py``` is more data engineering steps, to construct panels of data where each bond has columns for monthly/daily freq (so bond x date)
+
 ```trace.py``` has the TRACE trade-level data cleaning. Note we do not use Bond-Dickerson for a multitude of reasons: it cuts off at January 2025, it does not process MBS trades and all the corporates in sources such as FISD. Since we are going to have to do the TRACE data processing anyways, we just take the data processing/trade filter techniques from the Dickerson website and do it ourselves on all the data.
+
 ```bond_math.py``` is  helpers for feature engineering e.g if a data source doesn't report yield or accrued interest, we calculate it.
+
 ```config.py``` is where all the common used params are stored. Make edits  here for stuff such as start date of the data pull and directory names.
 
 # data_cleaning
 
-Builds the monthly bond dataset from WRDS, plus the daily Treasury curve. The ideal bond universe is AGG's actual monthly holdings, which we query in ```holdings.py```. We get the latest end of previous month portfolio holdings (last trading day), for our current month's model such that there is no forward leakage. ALl the bonds are keyed using the CUSIP9 code and month.
+Builds the monthly bond dataset from WRDS, plus the daily Treasury curve. The ideal bond universe is AGG's actual monthly holdings, which we query in ```holdings.py```. We get the latest end of previous month portfolio holdings (last trading day), for our current month's model such that there is no forward leakage. All the bonds are keyed using the CUSIP9 code and month.
 
 Prices are saved twice: `prices_monthly` (****one row per bond per held month, the modelling table) and `prices_daily`
-(every observed bond-day in a held month, no filling). The yield curve is saved daily.
+(every observed bond-day in a held month, no filling). The yield curve is modeled daily.
 
 Raw data is pulled for `config.START_DATE`-`END_DATE` (2016-01 to 2026-03, cached in `data/raw`), but output starts at
-`config.OUTPUT_START` (2017-08). BlackRock's holdings archive has no AGG files from 2017-01-03 to 2017-07-05, so
+`config.OUTPUT_START` (2017-08). AGG's download link has no AGG files from 2017-01-03 to 2017-07-05, so
 Feb-Jul 2017 have no start-of-month portfolio. The earlier history still feeds carried prices, the MBS cohort index and
 the trade filters.
 
@@ -32,27 +40,27 @@ uv run python -m data_cleaning.run_pipeline --refresh # ignore the caches and re
 uv run python -m data_cleaning.validate               # sanity checks
 ```
 
-WRDS login: `WRDS_USERNAME` in the repo `.env`, with the password in `~/.pgpass` (the `wrds` package offers to
-create it on the first interactive connection); WRDS also asks for a Duo approval every so often. The first run for
-2016-2026 downloads ~120 holdings files and pulls the TRACE history of ~22,000 bonds, a few hours; later runs use the
-caches in `data/raw/` and take about an hour, almost all of it trade-level TRACE cleaning (both `data/raw` and
-`data/processed` are gitignored). WRDS caches are keyed by date window *and* CUSIP set, and TRACE is pulled in 64
-fixed hash buckets, so extending the window or adding a month re-pulls only what changed. A run that finds
-everything cached does not connect to WRDS.
+
+WRDS login: in .env, put your WRDS_USERNAME and password. Requires 2FA with Duo set up. This takes a while to run (maybe few hours). This is all cached though so only needed to be run once.
+
+
+The rest of the data cleaning takes maybe an hour itself. All the data is cached in fixed hash buckets so if we want to extend the window or add a month it will only re-pull the cumulative, not the entire thing all over again. 
 
 ## Pipeline
 
+```run_pipeline.py```: run this script, with `config.py` holds the date window, sector map, conventions and table names.
 
-| step | module                         | what it does                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ---- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1    | `holdings.py`                  | For every month m, download AGG's holdings on the last trading day of m-1 from BlackRock's fund-document API (`config.AGG_HOLDINGS_API`, cached in `data/raw/agg_holdings/`); keep Treasury, Industrial, Financial Institutions, Utility and MBS Pass-Through (`config.SECTOR_MAP`, ~95% of bond value). The union of all months' bonds is what gets pulled from WRDS.                                                                  |
-| 2    | `pull.py`, `treasury_curve.py` | CRSP daily Treasury quotes (`crsp.tfz_dly` x `tfz_iss`). Drops TIPS/callables, mid = (bid+ask)/2, dirty = mid + CRSP accrued, 8-char CRSP CUSIPs get their check digit.                                                                                                                                                                                                                                                                 |
-| 3    | `treasury_curve.py`            | Nelson-Siegel-Svensson zero curve fitted to**all** nominal Treasury dirty prices each day (duration-weighted, outliers down-weighted); zero yields read off at the 8 key-rate tenors. **Saved daily.**                                                                                                                                                                                                                                  |
-| 4    | `trace.py`                     | Enhanced TRACE trades for the corporates, cleaned trade-by-trade (Dick-Nielsen cancels/corrections/reversals, inter-dealer duplicates, non-standard and long-settlement trades, Edwards-Harris-Piwowar median + reversal filters), collapsed to one row per bond-day in memory. Terms from FISD (`fisd.fisd_mergedissue`). |
-| 4    | `trace.py`                     | Same cleaning on TRACE SPDS enhanced pool trades (`trace_enhanced.trace_spds_mbs_enhanced`) and TBA trades (`..._tba_enhanced`). Pool quantities are converted to current face with the pool factor on file.                                                                                                                                                                                                                            |
-| 5    | `panels.py`                    | Treasuries and corporates: month-end price per held month (last observation, flagged by whether it fell in the final 5 trading days; carried forward if the bond did not trade), monthly bid-ask and volume, then accrued interest, dirty price, yield to maturity and spread over the zero curve (`bond_math.py`), solved only on these monthly rows.                                                                                  |
-| 5    | `panels.py`                    | The same for MBS, except months without a trade are filled from the pool's coupon cohort.                                                                                                                                                                                                                                                                                                                                               |
-| 6    | `merge.py`                     | Stacks the three panels into`prices_monthly` and the daily rows into `prices_daily`; bond terms and coverage per bond; monthly benchmark weights. Everything is cut to months from `OUTPUT_START`.                                                                                                                                                                                                                                      |
+
+| step | module              | what it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ---- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | `holdings.py`       | For every month m, download AGG's holdings on the last trading day of m-1 from BlackRock's fund-document API (`config.AGG_HOLDINGS_API`, cached in `data/raw/agg_holdings/`); keep Treasury, Industrial, Financial Institutions, Utility and MBS Pass-Through (`config.SECTOR_MAP`, ~95% of bond value). The union of all months' bonds is what gets pulled from WRDS.                                                                                                             |
+| 2    | `pull.py`           | Using the union of all months' bonds is what gets pulled from WRDS. Called from different data sources that are part of WRDS: TRACE/CRSP/FISD.                                                                                                                                                                                                                                                                                                                                     |
+| 3    | `treasury_curve.py` | Drop TIPS/callables, mid = (bid+ask)/2, dirty = mid + CRSP accrued, 8-char CRSP CUSIPs get their check digit. Do NSS formula to fit to all observed Treasury dirty prices each day (duration-weighted, outliers down-weighted to zero); zero yields read off at the 8 key-rate tenors.**Saved daily.**                                                                                                                                                                          |
+| 4    | `trace.py`          | Enhanced TRACE trades for the corporates, cleaned trade-by-trade (Dick-Nielsen cancels/corrections/reversals, inter-dealer duplicates, non-standard and long-settlement trades, Edwards-Harris-Piwowar median + reversal filters), collapsed to one row per bond-day in memory. Terms from FISD (`fisd.fisd_mergedissue`).                                                                                                                                                         |
+| 4    | `trace.py`          | Same cleaning on TRACE SPDS enhanced pool (MBS in our case) trades (`trace_enhanced.trace_spds_mbs_enhanced`). Pool quantities are converted to current face with the pool factor on file.                                                                                                                                                                                                                                                                                         |
+| 5    | `panels.py`         | Treasuries and corporates: basically we want to construct the end dataframes to have all the same shape so we process the data more by doing things. Month-end price per held month (last observation, flagged by whether it fell in the final 5 trading days; carried forward if the bond did not trade), monthly bid-ask and volume, then accrued interest, dirty price, yield to maturity and spread over the zero curve (`bond_math.py`), solved only on these monthly rows.  |
+| 5    | `panels.py`         | The same for MBS, except months without a trade are filled from the pool's coupon cohort.                                                                                                                                                                                                                                                                                                                                                                                          |
+| 6    | `merge.py`          | Stacks the three panels into`prices_monthly` and the daily rows into `prices_daily`; bond terms and coverage per bond; monthly benchmark weights. Everything is cut to months from `OUTPUT_START`.                                                                                                                                                                                                                                                                                 |
 
 `config.py` holds the date window, sector map, conventions and table names. `pull.py` is the WRDS connection, cache
 layer and every WRDS query; `bond_math.py` the coupon-schedule / accrued / cash-flow / yield-solving maths.
@@ -117,13 +125,10 @@ the NSS parameters and fit diagnostics. Its `date` column is also the trading ca
 - Months after a source's end still have holdings, so those bonds get `price_status` = `none` and `model_weight`
   is spread over what is priced. Restrict a backtest to months where every asset type is priced (Aug 2017 to Feb
   2025 with the current sources).
-- Coverage by year and asset type is printed by `validate.py`.
 - A bond added to AGG at the end of month m (new issue) only enters the panel in month m+1.
-- Rare TRACE prints on weekends or Good Friday are dropped when building month-end prices.
 - On MBS months held out as a test, the cohort proxy has a median error of 0.6 price points against 1.3 for a flat
   carry.
-- Not covered: CMBS, ABS, sovereign, supranational, agency and local-authority holdings (~5% of AGG). Agency debentures
-  are in `trace.trace_agency` with a different schema; the same cleaning could be pointed at it if ever needed.
+- Not covered: CMBS, ABS, sovereign, supranational, agency and local-authority holdings (~5% of AGG)
 - Callable and fixed-to-float corporates (`coupon_type == "V"`) are priced to maturity with their current coupon.
 - MBS pass-through yields/spreads need a prepayment model and are left NaN; AGG's stated coupon/maturity are used for accrued.
 - `wrdsapps_bondret` (monthly) is not used: it is derived from the same TRACE data at month-end frequency.

@@ -1,7 +1,7 @@
 """
 All the helper functions for bond stuff (cusip8 to 9 conversions, accrued interest, cash flow calcs)
 Bond maths used across the pipeline: CUSIP check digits, coupon schedules, accrued interest, cash flows, the
-Nelson-Siegel-Svensson zero curve formula, and solving yield to maturity / spread over the curve from a dirty price.
+NSS zero curve formula, and solving yield to maturity / spread over the curve from a dirty price.
 """
 import logging
 
@@ -15,7 +15,9 @@ NSS_PARAMS = ["beta0", "beta1", "beta2", "beta3", "tau1", "tau2"]
 
 
 def cusip_check_digit(cusip8):
-    """9th CUSIP character (modulus 10 double-add-double) for an 8-character stem."""
+    """
+    check the digits of the cusip code, since we use cusip9 with everything if its only 8 then we formulate the 9th digit (google the formula I don't want to type it)
+    """
     total = 0
     for i, ch in enumerate(cusip8.upper()):
         if ch.isdigit():
@@ -25,13 +27,13 @@ def cusip_check_digit(cusip8):
         else:
             v = {"*": 36, "@": 37, "#": 38}[ch]
         if i % 2 == 1:
-            v *= 2
+            v *= 2  
         total += v // 10 + v % 10
     return str((10 - total % 10) % 10)
 
 
 def to_cusip9(cusip8):
-    """CRSP Treasury CUSIPs are 8 characters; append the check digit so they join on the AGG 9-character CUSIP."""
+    """ append the check digit so they join on the 9 character cusip """
     if not isinstance(cusip8, str) or len(cusip8.strip()) != 8:
         return None
     stem = cusip8.strip().upper()
@@ -45,14 +47,15 @@ def coupon_dates(maturity, freq, earliest):
     step = max(round(12 / freq), 1)
     n_months = (mat.year - earliest.year) * 12 + mat.month - earliest.month
     back = step * np.arange(max(n_months // step + 2, 2))
-    m = (mat.year - 1970) * 12 + mat.month - 1 - back                       # months since 1970, descending
+    # months since 1970, descending
+    m = (mat.year - 1970) * 12 + mat.month - 1 - back                       
     first_of_month = m.astype("datetime64[M]").astype("datetime64[D]")
     days_in_month = ((m + 1).astype("datetime64[M]").astype("datetime64[D]") - first_of_month).astype(int)
     return (first_of_month + (np.minimum(mat.day, days_in_month) - 1).astype("timedelta64[D]"))[::-1]
 
 
 def days_30_360(start, end):
-    """30/360 (US) day count between two datetime64[D] arrays."""
+    """30/360 (US) day count between two datetime64 arrays."""
     def ymd(d):
         month = d.astype("datetime64[M]")
         return (d.astype("datetime64[Y]").astype(int) + 1970,

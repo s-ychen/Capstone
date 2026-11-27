@@ -80,7 +80,7 @@ def clean_trades(raw, product="corporate"):
     master_df = master_df[master_df["asof"] != "R"]
     steps.append(("1 cancels/corrections/reversals", len(master_df)))
 
-    # 2. since trades between dealers have them register both a buy and sell side, just keep the buy side trade logs
+    # 2. since trades between dealers have them register both a buy and sell side, just keep the sell side trade logs
     master_df = master_df[~((master_df["contra"] == "D") & (master_df["side"] == "B"))]
     steps.append(("2 inter-dealer duplicates", len(master_df)))
 
@@ -225,7 +225,7 @@ def build_mbs_daily(universe, refresh=False):
     for cusips, table, name, product in groups:
         if not cusips:
             continue
-        logs = []
+        logs = []  
         for raw in pull_trace(cusips, table, name, refresh):
             trades, steps = clean_trades(raw, product=product)
             logs.append(steps)

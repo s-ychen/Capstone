@@ -20,7 +20,8 @@ import requests
 from . import config as C
 
 log = logging.getLogger(__name__)
-MAX_STEP_BACK_DAYS = 7      # just move backwards from last day of month (can make a trading day schedule but i dont really want to)
+ # just move backwards from last day of month (can make a trading day schedule but i dont really want to)
+MAX_STEP_BACK_DAYS = 7     
 # iShares column -> our column. Everything else in the file (ISIN, SEDOL, FX, "Real" fields, ...) is dropped.
 COLS = {
     "CUSIP": "cusip", "Name": "name", "Sector": "agg_sector", "Asset Class": "asset_class",
@@ -49,7 +50,8 @@ def read_holdings(path):
 def modelled_holdings(df, asof):
     """Keep the bonds in the sectors we model (C.SECTOR_MAP) from one parsed holdings file.
     agg_weight = market value / market value of all the fund's bonds that day (cash and derivatives excluded),
-    so it sums to ~0.95 over the modelled sectors. Duplicate CUSIP rows are summed."""
+    so it sums to ~0.95 over the modelled sectors. Duplicate CUSIP rows are summed.
+    """
     bonds = df[df["cusip"].str.fullmatch(r"[A-Z0-9]{9}", na=False) & (df["asset_class"] == "Fixed Income")]
     total_mv = bonds["agg_market_value"].sum()
     out = bonds[bonds["agg_sector"].isin(C.SECTOR_MAP)].copy()
