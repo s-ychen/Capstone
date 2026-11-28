@@ -91,6 +91,6 @@ Done in `src/backtest/benchmark.py` (`Benchmark.weights_at`, `data_for`). For mo
 
 $$b_i = \frac{\text{agg\_market\_value}_i}{\sum_{j \in \text{selected}} \text{agg\_market\_value}_j}$$
 
-`data_for(d)` cuts the universe to the bonds in that month's benchmark and writes these weights to `agg_weight`, which `build_inputs` requires (the processed universe has no such column). `build_inputs` then drops bonds with no month-end price at the as-of date, matured bonds, bonds without a coupon and bonds whose price gives no valid spread, and renormalizes $b$ over the rest.
+`data_for(d)` cuts the universe to the bonds in that month's benchmark. `build_inputs` takes `agg_weight` from the same month's holdings file (matched by month, since a file can be dated after the last trading day, e.g. 2021-05-31), which is proportional to market value, so the result equals $b$ above. It then drops bonds with no month-end price at the as-of date, matured bonds, bonds without a coupon and bonds whose price gives no valid spread, and renormalizes $b$ over the rest.
 
 Example at 2022-01-31, corporate + treasury: 7,173 benchmark bonds, 6,953 kept (6,708 corporate, 245 treasury).

@@ -19,7 +19,7 @@ In a backtest, `Context` passes a shared `ResidualPanel` (`resid=`), which compu
 | `credit` | True | one credit factor per corporate sector |
 | `psi_n0` | 12 | prior weight in months for `psi`; None gives the plain sample variance with a sector median fill |
 | `min_obs` | 6 | residual returns a bond needs for its own variance |
-| `data` | `load_data()` | the loop passes `data_for(asof)`, with the benchmark in `agg_weight` |
+| `data` | `load_data()` | the loop passes `data_for(asof)`, the universe cut to the month's benchmark |
 | `G`, `t_index`, `N` | None | terminal wealth goal for `r_req`. Unused by the loop, which sets the goal through `Settings.ret_slack` |
 
 ## Steps
@@ -47,7 +47,7 @@ flowchart TD
 
 ### 1. Terms and benchmark
 
-Join the universe (already cut to the month's benchmark) to the panel at `asof`. Keep bonds that mature after `asof`, have a coupon, and give finite analytics in step 2. $b$ is `agg_weight` renormalized to sum 1. Treasuries get no credit risk: their spread to the fitted curve is a pricing residual.
+Join the universe (already cut to the month's benchmark) to the panel at `asof`. Keep bonds that mature after `asof`, have a coupon, and give finite analytics in step 2. $b$ is `agg_weight` from the month's holdings file, renormalized to sum 1. Treasuries get no credit risk: their spread to the fitted curve is a pricing residual.
 
 ### 2. Repricing (`krd.py`)
 

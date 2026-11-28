@@ -114,9 +114,10 @@ def build_inputs(asof, W: float, H: int = 2, G: float | None = None, t_index: in
     params = nss_params(cv)
 
     now = panel.xs(asof, level="month_end")
-    # benchmark: AGG's portfolio from the last holdings file on or before asof (no look-ahead). At a month-end that is
-    # the file dated asof itself, i.e. the portfolio AGG holds over the next month
-    bench = holdings[holdings["holdings_date"] == holdings.loc[holdings["holdings_date"] <= asof, "holdings_date"].max()]
+    # benchmark: AGG's portfolio from the last holdings file in or before asof's month, i.e. the portfolio AGG holds
+    # over the next month. Matched by month, not date: a file can be dated after the last trading day (2021-05-31)
+    month = holdings["holdings_date"].dt.to_period("M")
+    bench = holdings[holdings["holdings_date"] == holdings.loc[month <= asof.to_period("M"), "holdings_date"].max()]
     terms = (universe.set_index("cusip").join(bench.set_index("cusip")["agg_weight"], how="inner")
              .join(now[["dirty_price", "spread_bps", "stale"]], how="inner"))
     terms = terms[(terms["maturity_date"] > asof) & terms["coupon_rate"].notna()].reset_index()
