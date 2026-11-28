@@ -59,6 +59,7 @@ flowchart TD
 | `src/backtest/accounting.py` | `realised_returns`, `exit_cost` |
 | `src/backtest/results.py` | summary, run folder save and load |
 | `src/backtest/driver.py` | `run(cfg)`, `sweep(cfg, grid)` |
+| `app/main.py`, `app/figures.py` | Streamlit front end (`uv run streamlit run app/main.py`): basic and advanced input views, per-month progress, the `src/analytics` plots in plotly |
 | `src/optimize/backtest.py`, `dashboard.py` | legacy train/val/test backtest (cvxpy, 2024-2025) |
 
 ## Conventions
